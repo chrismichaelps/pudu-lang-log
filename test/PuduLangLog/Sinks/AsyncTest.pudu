@@ -1,0 +1,70 @@
+/** @Test.Sinks.Async.Suite — queued writes on a worker thread */
+module PuduLangLog.Sinks.AsyncTest
+
+import Std.Concurrent as Concurrent
+import Std.Io as Io
+import Std.Sync as Sync
+import Std.Test as Test
+import PuduLangLog.Event as Event
+import PuduLangLog as Log
+import PuduLangLog.Sink as Sink
+import PuduLangLog.Sinks.Async as Async
+import PuduLangLog.Sinks.Memory as Memory
+
+/// An event carrying a message.
+fn event(message: Str) -> Log.Event { Event.create(Log.Timestamp{millis: 0, offset: 0}, Log.Information, message, []) }
+
+/// Runs the suite.
+fn main() -> Int {
+  let memory = Memory.create()
+  let queue = Async.start(Memory.sink(&memory), Async.defaults())
+  let sink = Async.sinkOf(&queue)
+  for number in [1, 2, 3, 4, 5] { let _queued = (sink.emit)(&event(show(number))) }
+  (sink.flush)()
+  let flushed = Memory.messages(&memory)
+  (sink.close)()
+  let refused = (sink.emit)(&event("late"))
+
+  let gate = Sync.mutex()
+  let _held = Sync.lock(&gate)
+  let blocked = Memory.create()
+  let slow = Sink.of(fn(written: &Log.Event) -> Result[(), Str] {
+      let _waited = Sync.withLock(&gate, fn() -> () {})
+      (Memory.sink(&blocked).emit)(written)
+    })
+  let small = Async.start(slow, Async.Options{..Async.defaults(), bufferSize: 2})
+  let smallSink = Async.sinkOf(&small)
+  for number in [1, 2, 3, 4, 5, 6] { let _queued = (smallSink.emit)(&event(show(number))) }
+  let droppedWhileFull = Async.dropped(&small)
+  let _released = Sync.unlock(&gate)
+  (smallSink.close)()
+
+  let failures = Sync.counter(0)
+  let failing = Async.start(Sink.of(fn(_written: &Log.Event) -> Result[(), Str] { Err("down") }), Async.defaults())
+  let failingSink = Async.sinkOf(&failing)
+  (failingSink.attach)(fn(report: &Sink.Report) -> () { let _counted = Sync.increment(&failures, report.events.length()) })
+  let _sent = (failingSink.emit)(&event("x"))
+  (failingSink.close)()
+
+  let blocking = Memory.create()
+  let blockingQueue = Async.start(Memory.sink(&blocking), Async.Options{..Async.defaults(), bufferSize: 1, blockWhenFull: true})
+  let blockingSink = Async.sinkOf(&blockingQueue)
+  for number in [1, 2, 3, 4, 5, 6, 7, 8] { let _queued = (blockingSink.emit)(&event(show(number))) }
+  (blockingSink.close)()
+  let _paused = Concurrent.sleep(1)
+
+  let checks = Test.suite("Sinks.Async", &[
+      Test.equals("flushing waits for every queued event", &flushed, &["1", "2", "3", "4", "5"]),
+      Test.equals("a closed queue refuses events", &refused, &Err("the asynchronous sink is closed")),
+      Test.that("a full queue drops events rather than waiting", droppedWhileFull >= 3),
+      Test.equals("what was queued is written after the queue frees", &(Memory.events(&blocked).length() + droppedWhileFull), &6),
+      Test.equals("failures reach the attached listener", &Sync.count(&failures), &Ok(1)),
+      Test.equals("a blocking queue loses nothing", &Memory.messages(&blocking), &["1", "2", "3", "4", "5", "6", "7", "8"]),
+      Test.equals("nothing is pending after closing", &Async.pending(&blockingQueue), &0)
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

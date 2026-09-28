@@ -1,0 +1,160 @@
+/** @Log.Domain.Display.Module — values and messages rendered as styled text */
+module PuduLangLog.Domain.Display
+
+import Std.Decimal as Decimal
+import PuduLangLog.Domain.Dates as Dates
+import PuduLangLog.Domain.Json as Json
+import PuduLangLog.Domain.Numbers as Numbers
+import PuduLangLog.Domain.Padding as Padding
+import PuduLangLog.Domain.Properties as Properties
+import PuduLangLog as Log
+
+/** @Log.Domain.Display.Style — the role a piece of text plays */
+export type Style = Plain | Secondary | Tertiary | Invalid | NullStyle | NameStyle | StringStyle | NumberStyle | BooleanStyle | ScalarStyle | LevelStyle(Log.Level)
+
+/** @Log.Domain.Display.Piece — text with its style */
+export type Piece = { style: Style, text: Str }
+
+/// The type tag JSON renderings of messages and properties carry.
+export const TYPE_TAG: Str = "$type"
+
+/// The pieces' text joined without styles.
+export fn plain(pieces: &Array[Piece]) -> Str { pieces.map(|piece: Piece| piece.text).join("") }
+
+/// A scalar as display text under a format; text is quoted unless the format is `l`.
+export fn scalar(atom: &Log.Scalar, format: &Option[Str]) -> Piece {
+  match atom {
+    case Log.Null => Piece{style: NullStyle, text: "null"}
+    case Log.Boolean(flag) => Piece{style: BooleanStyle, text: if flag { "true" } else { "false" }}
+    case Log.Integer(number) => Piece{style: NumberStyle, text: numeric(Numbers.formatInteger(number, formatText(format)), show(number), format)}
+    case Log.Real(number) => Piece{style: NumberStyle, text: numeric(Numbers.formatReal(number, formatText(format)), Numbers.realText(number), format)}
+    case Log.Exact(number) => Piece{style: NumberStyle, text: numeric(Numbers.formatExact(number, formatText(format)), Decimal.toText(number), format)}
+    case Log.Text(text) => Piece{style: StringStyle, text: if *format == Some("l") { text } else { "\"" + text.replace("\"", "\\\"") + "\"" }}
+    case Log.Moment(moment) => Piece{style: ScalarStyle, text: Dates.formatMoment(&moment, format)}
+    case Log.Span(millis) => Piece{style: ScalarStyle, text: Dates.formatSpan(millis, format)}
+    case Log.Binary(bytes) => Piece{style: ScalarStyle, text: Json.hexOf(&bytes)}
+  }
+}
+
+/// A formatted number, or its default text when there is no format or the format is not understood.
+fn numeric(formatted: Option[Str], fallback: Str, format: &Option[Str]) -> Str {
+  if *format == None { return fallback }
+  match formatted {
+    case Some(text) => text
+    case None => fallback
+  }
+}
+
+/// The format's text, empty when there is none.
+fn formatText(format: &Option[Str]) -> Str {
+  match format {
+    case Some(text) => text
+    case None => ""
+  }
+}
+
+/// A value as display pieces. Sequence elements take the format; structure and dictionary members
+/// render without one.
+export fn value(held: &Log.Value, format: &Option[Str]) -> Array[Piece] {
+  match held {
+    case Log.Scalar(atom) => [scalar(&atom, format)]
+    case Log.Sequence(items) => {
+      var pieces = [punctuation("[")]
+      var first = true
+      for item in items {
+        if !first { pieces = pieces.push(punctuation(", ")) }
+        pieces = pieces.concat(value(&item, format))
+        first = false
+      }
+      pieces.push(punctuation("]"))
+    }
+    case Log.Structure(shape) => structure(&shape)
+    case Log.Dictionary(entries) => {
+      var pieces = [punctuation("[")]
+      var first = true
+      for entry in entries {
+        pieces = pieces.push(punctuation(if first { "(" } else { ", (" }))
+        pieces = pieces.push(scalar(&entry.key, &None)).push(punctuation(": ")).concat(value(&entry.value, &None)).push(punctuation(")"))
+        first = false
+      }
+      pieces.push(punctuation("]"))
+    }
+  }
+}
+
+/// A structure as `Tag { Name: value, … }`.
+fn structure(shape: &Log.Structure) -> Array[Piece] {
+  var pieces: Array[Piece] = []
+  if let Some(tag) = shape.tag { pieces = pieces.push(Piece{style: NameStyle, text: tag + " "}) }
+  pieces = pieces.push(punctuation("\{ "))
+  var first = true
+  for property in shape.properties {
+    if !first { pieces = pieces.push(punctuation(", ")) }
+    pieces = pieces.push(Piece{style: NameStyle, text: property.name}).push(punctuation(": ")).concat(value(&property.value, &None))
+    first = false
+  }
+  pieces.push(punctuation(if shape.properties.isEmpty() { "\}" } else { " \}" }))
+}
+
+/// Punctuation between the parts of a value.
+fn punctuation(text: Str) -> Piece { Piece{style: Tertiary, text: text} }
+
+/// A value as JSON, styled by the kind of value it is.
+export fn json(held: &Log.Value) -> Piece {
+  let style = match held {
+    case Log.Scalar(atom) => scalar(&atom, &None).style
+    case _ => Tertiary
+  }
+  Piece{style: style, text: Json.value(held, &Some(TYPE_TAG))}
+}
+
+/// The template rendered with the properties. A format containing `l` writes text values without
+/// quotes; one containing `j` writes values without their own format as JSON. A hole whose
+/// property is missing keeps its raw text.
+export fn message(template: &Log.Template, properties: &Array[Log.Property], format: &Option[Str]) -> Array[Piece] {
+  let options = formatText(format)
+  let literal = options.contains("l")
+  let asJson = options.contains("j")
+  var pieces: Array[Piece] = []
+  for token in template.tokens {
+    match token {
+      case Log.Literal(text) => { pieces = pieces.push(Piece{style: Plain, text: text}) }
+      case Log.Placeholder(placeholder) => { pieces = pieces.concat(hole(&placeholder, properties, literal, asJson)) }
+    }
+  }
+  pieces
+}
+
+/// One hole rendered from the properties and padded to its alignment.
+export fn hole(placeholder: &Log.Hole, properties: &Array[Log.Property], literal: Bool, asJson: Bool) -> Array[Piece] {
+  let found = match Properties.find(properties, placeholder.name) {
+    case Some(held) => held
+    case None => { return [Piece{style: Invalid, text: placeholder.raw}] }
+  }
+  let rendered = match found {
+    case Log.Scalar(Log.Text(text)) => if literal { [Piece{style: StringStyle, text: text}] } else { value(&found, &placeholder.format) }
+    case _ => if asJson && placeholder.format == None { [json(&found)] } else { value(&found, &placeholder.format) }
+  }
+  aligned(&rendered, &placeholder.alignment)
+}
+
+/// The pieces with spaces added to reach an alignment's width.
+export fn aligned(pieces: &Array[Piece], alignment: &Option[Log.Alignment]) -> Array[Piece] {
+  let text = plain(pieces)
+  let padding = Padding.padded(text, alignment).length() - text.length()
+  if padding <= 0 { return *pieces }
+  let spaces = Piece{style: Plain, text: " ".repeat(padding)}
+  match alignment {
+    case Some(shape) => if shape.left { pieces.push(spaces) } else { [spaces].concat(*pieces) }
+    case None => *pieces
+  }
+}
+
+/// A failure as text: `Kind: message`, its trace lines indented under `at`, and each cause after
+/// ` ---> ` in turn.
+export fn failure(problem: &Log.Failure) -> Str {
+  var lines = [if problem.message.isEmpty() { problem.kind } else { problem.kind + ": " + problem.message }]
+  for frame in problem.trace { lines = lines.push("   at " + frame) }
+  for cause in problem.causes { lines = lines.push(" ---> " + failure(&cause)) }
+  lines.join("\n")
+}

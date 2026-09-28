@@ -1,0 +1,50 @@
+/** @Log.LevelSwitch.Control — a minimum level changed while running */
+module PuduLangLog.LevelSwitch
+
+import Std.Sync as Sync
+import PuduLangLog.Domain.Levels as Levels
+import PuduLangLog as Log
+
+/** @Log.LevelSwitch.Shared — the level every holder of the switch sees */
+export type LevelSwitch = { current: Sync.Cell[Log.Level], lock: Sync.Mutex, listeners: Sync.Cell[Array[fn(Log.Level, Log.Level) -> ()]] }
+
+/// A switch starting at a level.
+export fn create(initial: Log.Level) -> LevelSwitch {
+  let none: Array[fn(Log.Level, Log.Level) -> ()] = []
+  LevelSwitch{current: Sync.cell(initial), lock: Sync.mutex(), listeners: Sync.cell(none)}
+}
+
+/// The switch's level.
+export fn level(control: &LevelSwitch) -> Log.Level {
+  match Sync.get(&control.current) {
+    case Ok(found) => found
+    case Err(_) => Log.Information
+  }
+}
+
+/// Whether an event at a level passes the switch.
+export fn allows(control: &LevelSwitch, candidate: Log.Level) -> Bool { Levels.passes(candidate, level(control)) }
+
+/// Changes the level, calling each listener with the old and new levels when it differs.
+export fn set(control: &LevelSwitch, next: Log.Level) -> () {
+  let changed = Sync.withLock(&control.lock, fn() -> Option[Log.Level] {
+      let previous = level(control)
+      if previous == next { return None }
+      let _stored = Sync.set(&control.current, next)
+      Some(previous)
+    })
+  if let Ok(Some(previous)) = changed {
+    if let Ok(listeners) = Sync.get(&control.listeners) {
+      for listener in listeners { listener(previous, next) }
+    }
+  }
+}
+
+/// Registers a listener called with the old and new levels after every change.
+export fn onChange(control: &LevelSwitch, listener: fn(Log.Level, Log.Level) -> ()) -> () {
+  let _registered = Sync.withLock(&control.lock, fn() -> () {
+      if let Ok(listeners) = Sync.get(&control.listeners) {
+        let _stored = Sync.set(&control.listeners, listeners.push(listener))
+      }
+    })
+}

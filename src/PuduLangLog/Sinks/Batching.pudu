@@ -1,0 +1,160 @@
+/** @Log.Sinks.Batching.Sink — groups events and emits them in batches */
+module PuduLangLog.Sinks.Batching
+
+import Std.Concurrent as Concurrent
+import Std.List as List
+import Std.Sync as Sync
+import Std.Time as Time
+import PuduLangLog.Domain.Schedule as Schedule
+import PuduLangLog as Log
+import PuduLangLog.SelfLog as SelfLog
+import PuduLangLog.Sink as Sink
+
+/** @Log.Sinks.Batching.Options — batch size, timing, queue, and retries */
+export type Options = {
+  batchSizeLimit: Int,
+  bufferingTimeLimit: Int,
+  eagerlyEmitFirstEvent: Bool,
+  queueLimit: Option[Int],
+  retryTimeLimit: Int,
+  selfLog: SelfLog.SelfLog
+}
+
+/** @Log.Sinks.Batching.Target — where a batch of events is written */
+export type Target = { emitBatch: fn(&Array[Log.Event]) -> Result[(), Str], onEmptyBatch: fn() -> () }
+
+/** @Log.Sinks.Batching.State — the queue, the batch being retried, and the schedule */
+type State = { queue: Array[Log.Event], retrying: Array[Log.Event], schedule: Schedule.State, eager: Bool, closed: Bool }
+
+/** @Log.Sinks.Batching.Context — what the worker and the sink share */
+type Context = { target: Target, options: Options, state: Sync.Cell[State], lock: Sync.Mutex, listener: Sync.Cell[Option[fn(&Sink.Report) -> ()]] }
+
+/// How long the worker sleeps between checks, in milliseconds.
+const TICK: Int = 5
+
+/// Batches of up to a thousand, every two seconds, the first event sent at once, a queue of a
+/// hundred thousand, retries for up to ten minutes, and a disabled self-log.
+export fn defaults() -> Options {
+  Options{batchSizeLimit: 1000, bufferingTimeLimit: 2000, eagerlyEmitFirstEvent: true, queueLimit: Some(100000), retryTimeLimit: 600000, selfLog: SelfLog.create()}
+}
+
+/// A sink queueing events for a worker thread that writes them to the target in batches. A failed
+/// batch is retried with growing waits until the retry time runs out; events it loses are reported
+/// to the self-log and to an attached listener. Flushing writes everything queued now.
+export fn sink(target: Target, options: Options) -> Sink.Sink {
+  let none: Array[Log.Event] = []
+  let state = Sync.cell(State{queue: none, retrying: none, schedule: Schedule.create(options.bufferingTimeLimit, options.retryTimeLimit), eager: options.eagerlyEmitFirstEvent, closed: false})
+  let lock = Sync.mutex()
+  let writing = Sync.mutex()
+  let noListener: Option[fn(&Sink.Report) -> ()] = None
+  let listener = Sync.cell(noListener)
+  let context = Context{target: target, options: options, state: state, lock: lock, listener: listener}
+  let worker = Concurrent.start(fn() -> () { work(&context, &writing) })
+  Sink.Sink {
+    emit: fn(event: &Log.Event) -> Result[(), Str] { enqueue(&context, event) },
+    flush: fn() -> () {
+      let _written = Sync.withLock(&writing, fn() -> () { writeAll(&context) })
+    },
+    close: fn() -> () {
+      change(&context, fn(held: State) -> State { State{..held, closed: true} })
+      if let Ok(started) = worker { let _joined = Concurrent.join(&started) }
+      let _written = Sync.withLock(&writing, fn() -> () { writeAll(&context) })
+    },
+    attach: fn(added: Sink.Listener) -> () { let _stored = Sync.set(&listener, Some(added)) }
+  }
+}
+
+/// The shared state.
+fn stateOf(context: &Context) -> State {
+  match Sync.get(&context.state) {
+    case Ok(held) => held
+    case Err(_) => State{queue: [], retrying: [], schedule: Schedule.create(0, 0), eager: false, closed: true}
+  }
+}
+
+/// Changes the shared state under its lock.
+fn change(context: &Context, update: fn(State) -> State) -> () {
+  let _changed = Sync.withLock(&context.lock, fn() -> () { let _stored = Sync.set(&context.state, update(stateOf(context))) })
+}
+
+/// Adds an event to the queue, dropping it when the queue is at its limit or the sink is closed.
+fn enqueue(context: &Context, event: &Log.Event) -> Result[(), Str] {
+  let accepted = Sync.withLock(&context.lock, fn() -> Result[(), Str] {
+      let held = stateOf(context)
+      if held.closed { return Err("the batching sink is closed") }
+      if let Some(limit) = context.options.queueLimit {
+        if held.queue.length() >= limit { return Ok(()) }
+      }
+      let _stored = Sync.set(&context.state, State{..held, queue: held.queue.push(*event)})
+      Ok(())
+    })
+  match accepted {
+    case Ok(outcome) => outcome
+    case Err(_) => Err("the batching sink's lock could not be taken")
+  }
+}
+
+/// The worker: waits for a full batch, the buffering time, or the first event when eager, then
+/// writes one batch, until the sink closes.
+fn work(context: &Context, writing: &Sync.Mutex) -> () {
+  var waitedFrom = Time.elapsed()
+  while !stateOf(context).closed {
+    let _slept = Concurrent.sleep(TICK)
+    let held = stateOf(context)
+    let due = Time.elapsed() - waitedFrom >= Schedule.interval(&held.schedule)
+    let full = held.queue.length() >= context.options.batchSizeLimit
+    let eager = held.eager && !held.queue.isEmpty()
+    if due || full || eager {
+      let _written = Sync.withLock(writing, fn() -> Bool { writeOne(context) })
+      waitedFrom = Time.elapsed()
+    }
+  }
+}
+
+/// Writes batches until the queue is empty or a batch fails.
+fn writeAll(context: &Context) -> () {
+  while !stateOf(context).queue.isEmpty() || !stateOf(context).retrying.isEmpty() {
+    if !writeOne(context) { return () }
+  }
+}
+
+/// Writes the batch being retried, or the next batch from the queue, and answers whether it was
+/// written. An empty queue calls the target's `onEmptyBatch`.
+fn writeOne(context: &Context) -> Bool {
+  let held = stateOf(context)
+  let batch = if held.retrying.isEmpty() { List.take(&held.queue, context.options.batchSizeLimit) } else { held.retrying }
+  if batch.isEmpty() {
+    (context.target.onEmptyBatch)()
+    return true
+  }
+  let taken = if held.retrying.isEmpty() { batch.length() } else { 0 }
+  change(context, fn(current: State) -> State { State{..current, queue: List.drop(&current.queue, taken), retrying: batch, eager: false} })
+  match (context.target.emitBatch)(&batch) {
+    case Ok(_) => {
+      change(context, fn(current: State) -> State { State{..current, retrying: [], schedule: Schedule.succeeded(&current.schedule)} })
+      true
+    }
+    case Err(problem) => {
+      failed(context, problem, &batch)
+      false
+    }
+  }
+}
+
+/// Records a failed batch: it is kept for a retry until the schedule drops it, and the queue is
+/// emptied after too many dropped batches.
+fn failed(context: &Context, problem: Str, batch: &Array[Log.Event]) -> () {
+  let verdict = Schedule.failed(&stateOf(context).schedule, Time.elapsed())
+  SelfLog.write(&context.options.selfLog, "Failed to emit a batch of " + show(batch.length()) + " events: " + problem)
+  let queued = stateOf(context).queue
+  change(context, fn(current: State) -> State {
+      let retrying = if verdict.dropBatch { [] } else { current.retrying }
+      let queue = if verdict.dropQueue { [] } else { current.queue }
+      State{..current, retrying: retrying, queue: queue, schedule: verdict.state}
+    })
+  let dropped = if verdict.dropBatch { *batch } else { [] }
+  let lost = if verdict.dropQueue { dropped.concat(queued) } else { dropped }
+  if !lost.isEmpty() {
+    if let Ok(Some(listener)) = Sync.get(&context.listener) { listener(&Sink.Report{kind: Sink.Permanent, message: problem, events: lost}) }
+  }
+}

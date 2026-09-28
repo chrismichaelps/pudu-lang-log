@@ -1,0 +1,11 @@
+/** @Log.Constants.Names.Vocabulary — property names and default templates */
+module PuduLangLog.Constants.Names
+
+/// The property naming the part of the program that wrote an event.
+export const SOURCE_CONTEXT: Str = "SourceContext"
+
+/// The output template of console sinks.
+export const CONSOLE_TEMPLATE: Str = "[\{Timestamp:HH:mm:ss\} \{Level:u3\}] \{Message:lj\}\{NewLine\}\{Exception\}"
+
+/// The output template of file sinks.
+export const FILE_TEMPLATE: Str = "\{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz\} [\{Level:u3\}] \{Message:lj\}\{NewLine\}\{Exception\}"

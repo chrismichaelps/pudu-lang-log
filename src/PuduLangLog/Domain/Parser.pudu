@@ -1,0 +1,155 @@
+/** @Log.Domain.Parser.Module — message template text into tokens */
+module PuduLangLog.Domain.Parser
+
+import Std.Char as Char
+import Std.List as List
+import Std.Option as Option
+import Std.Text as Text
+import PuduLangLog as Log
+
+/// The largest alignment width or hole position a template may name.
+const LARGEST: Int = 2147483647
+
+/// The template the text denotes. Text that does not form a valid hole is kept as literal text, so
+/// every string parses.
+export fn parse(text: Str) -> Log.Template {
+  let characters = text.chars()
+  var tokens: Array[Log.Token] = []
+  if characters.isEmpty() { tokens = [Log.Literal("")] }
+  var next = 0
+  while next < characters.length() {
+    let (literal, afterLiteral) = literalAt(&characters, next)
+    if afterLiteral > next { tokens = tokens.push(Log.Literal(literal)) }
+    next = afterLiteral
+    if next < characters.length() {
+      let (token, afterHole) = holeAt(text, &characters, next)
+      tokens = tokens.push(token)
+      next = afterHole
+    }
+  }
+  var holes: Array[Log.Hole] = []
+  for token in tokens {
+    if let Log.Placeholder(hole) = token { holes = holes.push(hole) }
+  }
+  Log.Template{text: text, tokens: tokens, holes: holes, binding: bindingOf(&holes)}
+}
+
+/// Whether a name can be given to a property: any text that is not blank.
+export fn isValidName(name: Str) -> Bool { !name.trim().isEmpty() }
+
+/// How the holes take their arguments: by position only when every hole is numbered.
+fn bindingOf(holes: &Array[Log.Hole]) -> Log.Binding {
+  if holes.isEmpty() { return Log.Unbound }
+  for hole in holes {
+    if hole.position == None { return Log.Named }
+  }
+  Log.Positional
+}
+
+/// The literal text from `start` up to the next hole, with doubled braces read as one, and the
+/// index after it.
+fn literalAt(characters: &Array[Char], start: Int) -> (Str, Int) {
+  var pieces: Array[Str] = []
+  var index = start
+  while index < characters.length() {
+    let character = characters[index]
+    let doubled = index + 1 < characters.length() && characters[index + 1] == character
+    if character == '{' {
+      if !doubled { return (pieces.join(""), index) }
+      pieces = pieces.push("\{")
+      index = index + 2
+    } else if character == '}' {
+      pieces = pieces.push("\}")
+      index = if doubled { index + 2 } else { index + 1 }
+    } else {
+      pieces = pieces.push(character.toText())
+      index = index + 1
+    }
+  }
+  (pieces.join(""), index)
+}
+
+/// The token starting at the opening brace at `start`, and the index after it: a hole when the
+/// text up to the next closing brace is valid, and literal text otherwise.
+fn holeAt(text: Str, characters: &Array[Char], start: Int) -> (Log.Token, Int) {
+  var close = start + 1
+  while close < characters.length() && characters[close] != '}' { close = close + 1 }
+  if close == characters.length() { return (Log.Literal(text.slice(start, close)), close) }
+  let raw = text.slice(start, close + 1)
+  let token = match holeOf(text.slice(start + 1, close), raw) {
+    case Some(hole) => Log.Placeholder(hole)
+    case None => Log.Literal(raw)
+  }
+  (token, close + 1)
+}
+
+/// The hole the text between braces describes, when it is valid.
+fn holeOf(content: Str, raw: Str) -> Option[Log.Hole] {
+  let (head, format, alignment) = split(content)
+  let hint = match List.first(&head.chars()) {
+    case Some('@') => Log.Destructure
+    case Some('$') => Log.Stringify
+    case _ => Log.Default
+  }
+  let name = if hint == Log.Default { head } else { head.drop(1) }
+  let characters = name.chars()
+  let first = List.first(&characters) ?
+  let numbered = Char.isDigit(first)
+  if numbered && !Text.allChars(name, |character: Char| Char.isDigit(character)) { return None }
+  if !numbered && !isIdentifier(&characters) { return None }
+  let position = if numbered { numberOf(&characters) } else { None }
+  let aligned = Option.andThen(alignment, |text: Str| alignmentOf(text))
+  if aligned == None && alignment != None { return None }
+  Some(Log.Hole{name: name, raw: raw, format: format, alignment: aligned, hint: hint, position: position})
+}
+
+/// The name with its hint, the format after the first `:`, and the alignment after a `,` that
+/// precedes it. An empty format is none; an empty alignment is kept as empty text, which no width
+/// reads.
+fn split(content: Str) -> (Str, Option[Str], Option[Str]) {
+  let (head, formatPart) = Text.breakOn(content, ":")
+  let (name, alignmentPart) = Text.breakOn(head, ",")
+  let alignment = if alignmentPart.isEmpty() { None } else { Some(alignmentPart.drop(1)) }
+  (name, formatOf(formatPart.drop(1)), alignment)
+}
+
+/// A format, absent when empty.
+fn formatOf(text: Str) -> Option[Str] { if text.isEmpty() { None } else { Some(text) } }
+
+/// The alignment text read as a width, left-aligned when it starts with `-`.
+fn alignmentOf(text: Str) -> Option[Log.Alignment] {
+  let left = text.startsWith("-")
+  let digits = if left { text.drop(1) } else { text }
+  let width = numberOf(&digits.chars()) ?
+  Some(Log.Alignment{left: left, width: width})
+}
+
+/// The characters read as a decimal number no larger than `LARGEST`, when they are all digits.
+fn numberOf(characters: &Array[Char]) -> Option[Int] {
+  if characters.isEmpty() { return None }
+  var value = 0
+  for character in characters {
+    value = value * 10 + Char.toDigit(character) ?
+    if value > LARGEST { return None }
+  }
+  Some(value)
+}
+
+/// Whether the characters are identifiers joined by single dots, each starting with a letter or `_`.
+fn isIdentifier(characters: &Array[Char]) -> Bool {
+  var starting = true
+  for character in characters {
+    if starting {
+      if !isLetter(character) && character != '_' { return false }
+      starting = false
+    } else if character == '.' {
+      starting = true
+    } else if !isLetter(character) && !Char.isDigit(character) && character != '_' {
+      return false
+    }
+  }
+  !starting
+}
+
+/// Whether a character is a letter: an ASCII letter or any character beyond ASCII.
+fn isLetter(character: Char) -> Bool { Char.isLetter(character) || !Char.isAscii(character) }

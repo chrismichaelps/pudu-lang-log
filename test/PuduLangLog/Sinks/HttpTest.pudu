@@ -1,0 +1,84 @@
+/** @Test.Sinks.Http.Suite — batches posted to an endpoint */
+module PuduLangLog.Sinks.HttpTest
+
+import Std.Concurrent as Concurrent
+import Std.Http.Client as Client
+import Std.Http.Server.Route as Route
+import Std.Http.Server as Server
+import Std.Http as Web
+import Std.Io as Io
+import Std.Sync as Sync
+import Std.Test as Test
+import PuduLangLog.Event as Event
+import PuduLangLog as Log
+import PuduLangLog.Sinks.Http as Http
+import PuduLangLog.Value as Value
+
+/// An event carrying a message.
+fn event(message: Str) -> Log.Event { Event.create(Log.Timestamp{millis: 0, offset: 0}, Log.Information, message, []) }
+
+/// Runs the suite.
+fn main() -> Int {
+  let noRequests: Array[Web.Request] = []
+  let sent = Sync.cell(noRequests)
+  let status = Sync.cell(202)
+  let fake = fn(request: &Web.Request) -> Result[Int, Str] {
+    if let Ok(held) = Sync.get(&sent) { let _stored = Sync.set(&sent, held.push(*request)) }
+    match Sync.get(&status) {
+      case Ok(code) => Ok(code)
+      case Err(_) => Err("no status")
+    }
+  }
+  let options = Http.Options{..Http.defaults("https://logs.example/ingest"), headers: [("X-Api-Key", "k1")], transport: fake}
+  let request = Http.requestOf(&options, &[event("a"), Event.withProperty(&event("b"), "N", Value.int(1))])
+  let sink = Http.sink(options)
+  let _queued = (sink.emit)(&event("posted"))
+  (sink.flush)()
+  let _refusing = Sync.set(&status, 500)
+  let _failed = (sink.emit)(&event("refused"))
+  (sink.flush)()
+  let requests = match Sync.get(&sent) {
+    case Ok(held) => held
+    case Err(_) => []
+  }
+  (sink.close)()
+
+  let noBodies: Array[Str] = []
+  let received = Sync.cell(noBodies)
+  let router = Route.routing(&[Route.post("/ingest", fn(incoming: Route.Request) -> Web.Response {
+          if let Ok(held) = Sync.get(&received) { let _stored = Sync.set(&received, held.push(Route.body(&incoming))) }
+          Web.Response{status: Web.status(201), headers: [], body: "", binaryBody: None}
+        })])
+  let server = Server.server(&router)
+  let delivered = match Server.start("127.0.0.1", 0) {
+    case Ok(running) => {
+      let serving = Concurrent.start(fn() -> () { let _served = Server.run(&server, &running, 1) })
+      let live = Http.sink(Http.Options{..Http.defaults("http://127.0.0.1:" + show(Server.portOf(&running)) + "/ingest"), transport: Http.transport(Client.limits().reaching(&["127.0.0.1"]))})
+      let _sentLive = (live.emit)(&event("over the wire"))
+      (live.flush)()
+      (live.close)()
+      if let Ok(worker) = serving { let _joined = Concurrent.join(&worker) }
+      let _stopped = Server.stop(&running)
+      match Sync.get(&received) {
+        case Ok(held) => held
+        case Err(_) => []
+      }
+    }
+    case Err(_) => ["the test server could not start"]
+  }
+
+  let checks = Test.suite("Sinks.Http", &[
+      Test.equals("a batch is one post", &request.method, &Web.Post),
+      Test.equals("to the endpoint", &request.target, &"https://logs.example/ingest"),
+      Test.equals("carrying one compact line per event", &request.body, &"\{\"@t\":\"1970-01-01T00:00:00.0000000Z\",\"@mt\":\"a\"\}\n\{\"@t\":\"1970-01-01T00:00:00.0000000Z\",\"@mt\":\"b\",\"N\":1\}\n"),
+      Test.equals("with the content type and headers", &(Web.header(&request.headers, "content-type"), Web.header(&request.headers, "X-Api-Key")), &(Some("application/x-ndjson"), Some("k1"))),
+      Test.equals("an accepted batch is sent once", &requests.length(), &2),
+      Test.equals("a refused batch is kept for a retry", &requests[1].body.contains("refused"), &true),
+      Test.equals("a live endpoint receives the batch", &delivered, &["\{\"@t\":\"1970-01-01T00:00:00.0000000Z\",\"@mt\":\"over the wire\"\}\n"])
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

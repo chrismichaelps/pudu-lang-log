@@ -1,0 +1,32 @@
+/** @Log.Domain.EventId.Module — a stable identifier for each template */
+module PuduLangLog.Domain.EventId
+
+import Std.Option as Option
+import Std.Text as Text
+
+/// Hexadecimal digits by value.
+const HEX: Str = "0123456789abcdef"
+
+/// A 32-bit one-at-a-time hash of the template text: events from the same template share it.
+export fn compute(template: Str) -> UInt32 {
+  var hash = 0u32
+  for character in template.chars() {
+    hash = hash &+ Option.unwrapOr(convertInteger[UInt32](character.code()), 0u32)
+    hash = hash &+ (hash << 10)
+    hash = hash ^ (hash >> 6)
+  }
+  hash = hash &+ (hash << 3)
+  hash = hash ^ (hash >> 11)
+  hash &+ (hash << 15)
+}
+
+/// The identifier as eight lower-case hexadecimal digits.
+export fn hex(id: UInt32) -> Str {
+  var value = Option.unwrapOr(convertInteger[Int](id), 0)
+  var digits: Array[Str] = []
+  while value > 0 {
+    digits = [HEX.slice(value % 16, value % 16 + 1)].concat(digits)
+    value = value / 16
+  }
+  Text.padLeft(digits.join(""), 8, "0")
+}

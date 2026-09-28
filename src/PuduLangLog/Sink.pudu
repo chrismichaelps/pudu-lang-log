@@ -1,0 +1,144 @@
+/** @Log.Sink.Seam — where events finally go, and wrappers around them */
+module PuduLangLog.Sink
+
+import Std.List as List
+import PuduLangLog.Domain.Levels as Levels
+import PuduLangLog.LevelSwitch as LevelSwitch
+import PuduLangLog as Log
+import PuduLangLog.SelfLog as SelfLog
+
+/** @Log.Sink.FailureKind — whether events of a failure may still arrive */
+export type FailureKind = Temporary | Permanent | Final
+
+/** @Log.Sink.Report — a sink failure and the events it lost */
+export type Report = { kind: FailureKind, message: Str, events: Array[Log.Event] }
+
+/** @Log.Sink.Listener — receives reports of sink failures */
+export type Listener = fn(&Report) -> ()
+
+/** @Log.Sink.Destination — emits events, flushes, and closes */
+export type Sink = {
+  emit: fn(&Log.Event) -> Result[(), Str],
+  flush: fn() -> (),
+  close: fn() -> (),
+  attach: fn(Listener) -> ()
+}
+
+/// A sink that writes each event with a function and needs no flushing or closing.
+export fn of(emit: fn(&Log.Event) -> Result[(), Str]) -> Sink {
+  Sink{emit: emit, flush: fn() -> () {}, close: fn() -> () {}, attach: fn(_listener: Listener) -> () {}}
+}
+
+/// A sink that formats each event and writes the text.
+export fn lines(formatter: Log.Formatter, write: fn(Str) -> Result[(), Str]) -> Sink {
+  of(fn(event: &Log.Event) -> Result[(), Str] { write(formatter(event)) })
+}
+
+/// A sink that discards every event.
+export fn none() -> Sink { of(fn(_event: &Log.Event) -> Result[(), Str] { Ok(()) }) }
+
+/// The sink with a different emit, keeping its flush, close, and listener.
+fn wrapped(sink: &Sink, emit: fn(&Log.Event) -> Result[(), Str]) -> Sink { Sink{..*sink, emit: emit} }
+
+/// The sink receiving only events at or above a level.
+export fn restricted(sink: Sink, minimum: Log.Level) -> Sink {
+  wrapped(&sink, fn(event: &Log.Event) -> Result[(), Str] { if Levels.passes(event.level, minimum) { (sink.emit)(event) } else { Ok(()) } })
+}
+
+/// The sink receiving only events a level switch allows.
+export fn controlled(sink: Sink, control: &LevelSwitch.LevelSwitch) -> Sink {
+  let shared = *control
+  wrapped(&sink, fn(event: &Log.Event) -> Result[(), Str] { if LevelSwitch.allows(&shared, event.level) { (sink.emit)(event) } else { Ok(()) } })
+}
+
+/// The sink receiving only events a condition accepts.
+export fn conditional(sink: Sink, condition: fn(&Log.Event) -> Bool) -> Sink {
+  wrapped(&sink, fn(event: &Log.Event) -> Result[(), Str] { if condition(event) { (sink.emit)(event) } else { Ok(()) } })
+}
+
+/// A sink writing to every sink. A failing sink is reported to the self-log and the others still
+/// receive the event, so the aggregate never fails.
+export fn aggregate(sinks: Array[Sink], log: &SelfLog.SelfLog) -> Sink {
+  let shared = *log
+  Sink {
+    emit: fn(event: &Log.Event) -> Result[(), Str] {
+      for sink in sinks {
+        if let Err(problem) = (sink.emit)(event) { SelfLog.write(&shared, "Caught failure while emitting to sink: " + problem) }
+      }
+      Ok(())
+    },
+    flush: fn() -> () { for sink in sinks { (sink.flush)() } },
+    close: fn() -> () { for sink in sinks { (sink.close)() } },
+    attach: fn(listener: Listener) -> () { for sink in sinks { (sink.attach)(listener) } }
+  }
+}
+
+/// A sink writing to every sink and answering the first failure after all have been tried, for
+/// audit trails whose writes must be confirmed.
+export fn audited(sinks: Array[Sink]) -> Sink {
+  Sink {
+    emit: fn(event: &Log.Event) -> Result[(), Str] {
+      var outcome: Result[(), Str] = Ok(())
+      for sink in sinks {
+        let result = (sink.emit)(event)
+        if outcome == Ok(()) { outcome = result }
+      }
+      outcome
+    },
+    flush: fn() -> () { for sink in sinks { (sink.flush)() } },
+    close: fn() -> () { for sink in sinks { (sink.close)() } },
+    attach: fn(listener: Listener) -> () { for sink in sinks { (sink.attach)(listener) } }
+  }
+}
+
+/// The sink with its failures reported to a listener instead of the caller. Failures a sink finds
+/// later, such as a batch that could not be sent, reach the same listener.
+export fn fallible(sink: Sink, listener: Listener) -> Sink {
+  (sink.attach)(listener)
+  Sink {
+    ..sink,
+    emit: fn(event: &Log.Event) -> Result[(), Str] {
+      if let Err(problem) = (sink.emit)(event) { listener(&Report{kind: Permanent, message: "Failed to emit event to wrapped sink: " + problem, events: [*event]}) }
+      Ok(())
+    }
+  }
+}
+
+/// A sink trying each sink in turn until one records the event. Events a sink loses later are
+/// handed to the sinks after it. The chain fails only when every sink failed.
+export fn fallbackChain(sinks: Array[Sink]) -> Sink {
+  var index = 0
+  for sink in sinks {
+    let rest = sinks.slice(index + 1, sinks.length())
+    (sink.attach)(fn(report: &Report) -> () {
+        for lost in report.events { let _forwarded = emitFirst(&rest, &lost) }
+      })
+    index = index + 1
+  }
+  Sink {
+    emit: fn(event: &Log.Event) -> Result[(), Str] { emitFirst(&sinks, event) },
+    flush: fn() -> () { for sink in sinks { (sink.flush)() } },
+    close: fn() -> () { for sink in sinks { (sink.close)() } },
+    attach: fn(listener: Listener) -> () {
+      if let Some(last) = List.last(&sinks) { (last.attach)(listener) }
+    }
+  }
+}
+
+/// The event emitted to the first sink that accepts it, or the last failure.
+fn emitFirst(sinks: &Array[Sink], event: &Log.Event) -> Result[(), Str] {
+  var outcome: Result[(), Str] = Err("No sink in the fallback chain")
+  for sink in sinks {
+    outcome = (sink.emit)(event)
+    if outcome == Ok(()) { return outcome }
+  }
+  outcome
+}
+
+/// A listener writing each report to the self-log.
+export fn reportTo(log: &SelfLog.SelfLog) -> Listener {
+  let shared = *log
+  fn(report: &Report) -> () {
+    SelfLog.write(&shared, "Logging failure (" + show(report.kind) + ", " + show(report.events.length()) + " events): " + report.message)
+  }
+}

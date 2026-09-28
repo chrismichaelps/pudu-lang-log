@@ -1,0 +1,66 @@
+---
+type: module
+path: "@root/src/PuduLangLog/Value.pudu"
+fidelity: Active
+grammar: "[[grammar/pudu]]"
+depth_score: 0.6
+depth_status: MEDIUM
+tags: [module]
+aliases: [PuduLangLog.Value]
+---
+
+# PuduLangLog.Value
+
+## Purpose
+
+Builds the [[domain/Value|values]] a program passes to a log call: scalars, sequences,
+structures, and dictionaries, and turns any `Capturable` type into one with `Value.of`.
+
+## Interface
+
+### Signatures
+
+```pudu
+```
+
+### Linkage
+
+- **Requires:** [[src/PuduLangLog]], [[src/PuduLangLog/Domain/Display]],
+  [[src/PuduLangLog/Domain/Json]].
+- **Consumed by:** package users, the enrichers, and the request logger.
+
+## Algorithm
+
+1. `Capturable` is implemented for `Log.Value`, `Int`, `Str`, `Bool`, `Float64`, `Char`, `Bytes`, `Log.Timestamp`, and for `Array[T]` and `Option[T]` of any capturable `T`
+   (arrays become sequences, `None` becomes null). A program implements it for its own types.
+2. `structure` and `object` build tagged and untagged structures from name–value pairs;
+   `dictionary` keys by text and `keyed` by any scalar.
+3. `render` and `json` show a value as a message or a JSON formatter would.
+
+## Negative Logic (Prohibited Paths)
+
+- No `Capturable` implementation for `Decimal`: the 0.1.2 runtime cannot dispatch a trait method
+  on a decimal ([pudu-lang#371](https://github.com/chrismichaelps/pudu-lang/issues/371)), so
+  `Value.decimal` builds exact values.
+- No builder captures: limits and hints apply only when a value is bound to a hole or a property.
+
+## Edge Cases
+
+- `Value.of(None)` is null whatever the option's type.
+
+## Depth
+
+DEPTH 0.6 (MEDIUM). Tested by `test/PuduLangLog/ValueTest`.
+
+## Grill Log
+
+- **Q:** Why a trait rather than reflection?
+  **A:** Pudu has no runtime type inspection; a trait lets each type decide which of its fields are
+  worth logging, which is also the safe default for secrets. _Rejected:_ `show` for everything
+  (loses structure).
+- **Q:** Why `nothing()` rather than `null()`?
+  **A:** `null` is reserved for the foreign interface. _Rejected:_ `none()` (reads as an option).
+
+## Referenced by
+
+(none)

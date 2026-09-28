@@ -1,0 +1,37 @@
+/** @Test.Formatting.Suite — text, JSON, and compact JSON formatters */
+module PuduLangLog.Formatting.FormattingTest
+
+import Std.Io as Io
+import Std.Test as Test
+import PuduLangLog.Event as Event
+import PuduLangLog.Failure as Failure
+import PuduLangLog.Formatting.Compact as Compact
+import PuduLangLog.Formatting.Json as Json
+import PuduLangLog.Formatting.Text as Text
+import PuduLangLog as Log
+import PuduLangLog.Value as Value
+
+/// Runs the suite.
+fn main() -> Int {
+  let event = Event.create(Log.Timestamp{millis: 1790604309123, offset: 120}, Log.Warning, "Disk \{Disk\} is \{Percent:0.0\}% full", [Value.property("Disk", Value.text("C")), Value.property("Percent", Value.float(93.25))])
+  let informational = Log.Event{..event, level: Log.Information}
+  let detailed = Event.withTrace(&Event.withFailure(&Event.withProperty(&event, "@odd", Value.structure("User", [("Name", Value.text("a\"b"))])), Failure.of("IoError", "full")), "t1", "s1")
+  let plain = Event.create(Log.Timestamp{millis: 0, offset: 0}, Log.Information, "Hello", [])
+  let json = Json.formatter(Json.defaults())
+  let checks = Test.suite("Formatting", &[
+      Test.equals("a text template", &Text.template("[\{Level:u3\}] \{Message\}")(&event), &"[WRN] Disk \"C\" is 93.3% full"),
+      Test.equals("JSON with renderings", &json(&event), &"\{\"Timestamp\":\"2026-09-28T16:05:09.1230000+02:00\",\"Level\":\"Warning\",\"MessageTemplate\":\"Disk \{Disk\} is \{Percent:0.0\}% full\",\"Properties\":\{\"Disk\":\"C\",\"Percent\":93.25\},\"Renderings\":\{\"Percent\":[\{\"Format\":\"0.0\",\"Rendering\":\"93.3\"\}]\}\}\n"),
+      Test.equals("JSON with every part", &Json.formatter(Json.Options{renderMessage: true, closingDelimiter: ""})(&detailed), &"\{\"Timestamp\":\"2026-09-28T16:05:09.1230000+02:00\",\"Level\":\"Warning\",\"MessageTemplate\":\"Disk \{Disk\} is \{Percent:0.0\}% full\",\"RenderedMessage\":\"Disk \\\"C\\\" is 93.3% full\",\"TraceId\":\"t1\",\"SpanId\":\"s1\",\"Exception\":\"IoError: full\",\"Properties\":\{\"Disk\":\"C\",\"Percent\":93.25,\"@odd\":\{\"Name\":\"a\\\"b\",\"_typeTag\":\"User\"\}\},\"Renderings\":\{\"Percent\":[\{\"Format\":\"0.0\",\"Rendering\":\"93.3\"\}]\}\}"),
+      Test.equals("JSON without properties or renderings", &json(&plain), &"\{\"Timestamp\":\"1970-01-01T00:00:00.0000000+00:00\",\"Level\":\"Information\",\"MessageTemplate\":\"Hello\"\}\n"),
+      Test.equals("renderings group repeated holes", &json(&Event.create(Log.Timestamp{millis: 0, offset: 0}, Log.Information, "\{A:00\} \{A:000\} \{B:0\}", [Value.property("A", Value.int(5)), Value.property("B", Value.int(1))])), &"\{\"Timestamp\":\"1970-01-01T00:00:00.0000000+00:00\",\"Level\":\"Information\",\"MessageTemplate\":\"\{A:00\} \{A:000\} \{B:0\}\",\"Properties\":\{\"A\":5,\"B\":1\},\"Renderings\":\{\"A\":[\{\"Format\":\"00\",\"Rendering\":\"05\"\},\{\"Format\":\"000\",\"Rendering\":\"005\"\}],\"B\":[\{\"Format\":\"0\",\"Rendering\":\"1\"\}]\}\}\n"),
+      Test.equals("compact JSON", &Compact.compact()(&event), &"\{\"@t\":\"2026-09-28T14:05:09.1230000Z\",\"@mt\":\"Disk \{Disk\} is \{Percent:0.0\}% full\",\"@r\":[\"93.3\"],\"@l\":\"Warning\",\"Disk\":\"C\",\"Percent\":93.25\}\n"),
+      Test.equals("compact JSON leaves out the information level", &Compact.compact()(&plain), &"\{\"@t\":\"1970-01-01T00:00:00.0000000Z\",\"@mt\":\"Hello\"\}\n"),
+      Test.equals("compact JSON with every part", &Compact.compact()(&Log.Event{..detailed, template: informational.template}), &"\{\"@t\":\"2026-09-28T14:05:09.1230000Z\",\"@mt\":\"Disk \{Disk\} is \{Percent:0.0\}% full\",\"@r\":[\"93.3\"],\"@l\":\"Warning\",\"@x\":\"IoError: full\",\"@tr\":\"t1\",\"@sp\":\"s1\",\"Disk\":\"C\",\"Percent\":93.25,\"@@odd\":\{\"Name\":\"a\\\"b\",\"$type\":\"User\"\}\}\n"),
+      Test.equals("rendered compact JSON", &Compact.rendered()(&informational), &"\{\"@t\":\"2026-09-28T14:05:09.1230000Z\",\"@m\":\"Disk \\\"C\\\" is 93.3% full\",\"@i\":\"c9fb6c7e\",\"Disk\":\"C\",\"Percent\":93.25\}\n")
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

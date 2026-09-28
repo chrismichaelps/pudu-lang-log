@@ -1,0 +1,54 @@
+/** @Log.Sinks.Http.Sink — batches of events posted to an endpoint */
+module PuduLangLog.Sinks.Http
+
+import Std.Http.Client as Client
+import Std.Http as Web
+import PuduLangLog.Formatting.Compact as Compact
+import PuduLangLog as Log
+import PuduLangLog.Sink as Sink
+import PuduLangLog.Sinks.Batching as Batching
+
+/** @Log.Sinks.Http.Options — endpoint, headers, body format, batching, and transport */
+export type Options = {
+  endpoint: Str,
+  headers: Array[(Str, Str)],
+  contentType: Str,
+  formatter: fn(&Log.Event) -> Str,
+  batching: Batching.Options,
+  transport: fn(&Web.Request) -> Result[Int, Str]
+}
+
+/// Compact JSON lines posted with the default batching and client limits.
+export fn defaults(endpoint: Str) -> Options {
+  Options{endpoint: endpoint, headers: [], contentType: "application/x-ndjson", formatter: Compact.compact(), batching: Batching.defaults(), transport: transport(Client.limits())}
+}
+
+/// A transport sending requests with the standard client under limits, answering the status code.
+/// Internal hosts must be named in the limits with `reaching`.
+export fn transport(limits: Client.Limits) -> fn(&Web.Request) -> Result[Int, Str] {
+  fn(request: &Web.Request) -> Result[Int, Str] {
+    match Client.send(request, &limits) {
+      case Ok(response) => Ok(response.status.code)
+      case Err(problem) => Err(Client.explain(&problem))
+    }
+  }
+}
+
+/// The request carrying a batch: every event formatted and joined, posted with the headers.
+export fn requestOf(options: &Options, batch: &Array[Log.Event]) -> Web.Request {
+  var request = Web.withBody(&Web.request(Web.Post, options.endpoint), batch.map(|event: Log.Event| (options.formatter)(&event)).join(""))
+  request = Web.withHeader(&request, "content-type", options.contentType)
+  for header in options.headers { request = Web.withHeader(&request, header[0], header[1]) }
+  request
+}
+
+/// A batching sink posting each batch; a status outside 200 to 299 is a failed batch.
+export fn sink(options: Options) -> Sink.Sink {
+  Batching.sink(Batching.Target {
+      emitBatch: fn(batch: &Array[Log.Event]) -> Result[(), Str] {
+        let status = (options.transport)(&requestOf(&options, batch)) ?
+        if status >= 200 && status < 300 { Ok(()) } else { Err("the endpoint answered " + show(status)) }
+      },
+      onEmptyBatch: fn() -> () {}
+    }, options.batching)
+}

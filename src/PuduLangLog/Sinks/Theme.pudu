@@ -1,0 +1,161 @@
+/** @Log.Sinks.Theme.Palette — terminal colours for each kind of text */
+module PuduLangLog.Sinks.Theme
+
+import PuduLangLog.Domain.Display as Display
+import PuduLangLog as Log
+
+/** @Log.Sinks.Theme.Palette — the escape sequence that starts each style */
+export type Theme = {
+  text: Str,
+  secondary: Str,
+  tertiary: Str,
+  invalid: Str,
+  nullValue: Str,
+  name: Str,
+  string: Str,
+  number: Str,
+  boolean: Str,
+  scalar: Str,
+  verbose: Str,
+  debug: Str,
+  information: Str,
+  warning: Str,
+  error: Str,
+  fatal: Str
+}
+
+/// The sequence that ends a styled piece.
+const RESET: Str = "\u{1b}[0m"
+
+/// A theme that writes no escape sequences.
+export fn none() -> Theme {
+  Theme{text: "", secondary: "", tertiary: "", invalid: "", nullValue: "", name: "", string: "", number: "", boolean: "", scalar: "", verbose: "", debug: "", information: "", warning: "", error: "", fatal: ""}
+}
+
+/// Bright text on a dark terminal, with values coloured by kind: the default console theme.
+export fn literate() -> Theme {
+  Theme {
+    text: "\u{1b}[38;5;0015m",
+    secondary: "\u{1b}[38;5;0007m",
+    tertiary: "\u{1b}[38;5;0008m",
+    invalid: "\u{1b}[38;5;0011m",
+    nullValue: "\u{1b}[38;5;0027m",
+    name: "\u{1b}[38;5;0007m",
+    string: "\u{1b}[38;5;0045m",
+    number: "\u{1b}[38;5;0200m",
+    boolean: "\u{1b}[38;5;0027m",
+    scalar: "\u{1b}[38;5;0085m",
+    verbose: "\u{1b}[38;5;0007m",
+    debug: "\u{1b}[38;5;0007m",
+    information: "\u{1b}[38;5;0015m",
+    warning: "\u{1b}[38;5;0011m",
+    error: "\u{1b}[38;5;0015m\u{1b}[48;5;0196m",
+    fatal: "\u{1b}[38;5;0015m\u{1b}[48;5;0196m"
+  }
+}
+
+/// Shades of grey only, with warnings and errors inverted.
+export fn grayscale() -> Theme {
+  Theme {
+    text: "\u{1b}[37;1m",
+    secondary: "\u{1b}[37m",
+    tertiary: "\u{1b}[30;1m",
+    invalid: "\u{1b}[37;1m\u{1b}[47m",
+    nullValue: "\u{1b}[1m\u{1b}[37;1m",
+    name: "\u{1b}[37m",
+    string: "\u{1b}[1m\u{1b}[37;1m",
+    number: "\u{1b}[1m\u{1b}[37;1m",
+    boolean: "\u{1b}[1m\u{1b}[37;1m",
+    scalar: "\u{1b}[1m\u{1b}[37;1m",
+    verbose: "\u{1b}[30;1m",
+    debug: "\u{1b}[30;1m",
+    information: "\u{1b}[37;1m",
+    warning: "\u{1b}[37;1m\u{1b}[47m",
+    error: "\u{1b}[30m\u{1b}[47m",
+    fatal: "\u{1b}[30m\u{1b}[47m"
+  }
+}
+
+/// Muted colours in the manner of a code editor.
+export fn code() -> Theme {
+  Theme {
+    text: "\u{1b}[38;5;0253m",
+    secondary: "\u{1b}[38;5;0246m",
+    tertiary: "\u{1b}[38;5;0242m",
+    invalid: "\u{1b}[33;1m",
+    nullValue: "\u{1b}[38;5;0038m",
+    name: "\u{1b}[38;5;0081m",
+    string: "\u{1b}[38;5;0216m",
+    number: "\u{1b}[38;5;151m",
+    boolean: "\u{1b}[38;5;0038m",
+    scalar: "\u{1b}[38;5;0079m",
+    verbose: "\u{1b}[37m",
+    debug: "\u{1b}[37m",
+    information: "\u{1b}[37;1m",
+    warning: "\u{1b}[38;5;0229m",
+    error: "\u{1b}[38;5;0197m\u{1b}[48;5;0238m",
+    fatal: "\u{1b}[38;5;0197m\u{1b}[48;5;0238m"
+  }
+}
+
+/// The sixteen basic colours, for terminals without a 256-colour palette.
+export fn sixteen() -> Theme {
+  Theme {
+    text: "",
+    secondary: "",
+    tertiary: "",
+    invalid: "\u{1b}[33m",
+    nullValue: "\u{1b}[34m",
+    name: "",
+    string: "\u{1b}[36m",
+    number: "\u{1b}[35m",
+    boolean: "\u{1b}[34m",
+    scalar: "\u{1b}[32m",
+    verbose: "",
+    debug: "\u{1b}[1m",
+    information: "\u{1b}[36;1m",
+    warning: "\u{1b}[33;1m",
+    error: "\u{1b}[31;1m",
+    fatal: "\u{1b}[31;1m"
+  }
+}
+
+/// The escape sequence that starts a style.
+fn startOf(theme: &Theme, style: &Display.Style) -> Str {
+  match style {
+    case Display.Plain => theme.text
+    case Display.Secondary => theme.secondary
+    case Display.Tertiary => theme.tertiary
+    case Display.Invalid => theme.invalid
+    case Display.NullStyle => theme.nullValue
+    case Display.NameStyle => theme.name
+    case Display.StringStyle => theme.string
+    case Display.NumberStyle => theme.number
+    case Display.BooleanStyle => theme.boolean
+    case Display.ScalarStyle => theme.scalar
+    case Display.LevelStyle(level) => match level {
+      case Log.Verbose => theme.verbose
+      case Log.Debug => theme.debug
+      case Log.Information => theme.information
+      case Log.Warning => theme.warning
+      case Log.Error => theme.error
+      case Log.Fatal => theme.fatal
+    }
+  }
+}
+
+/// The pieces joined, each styled piece wrapped in its escape sequence and a reset. Line breaks
+/// stay outside the escapes so a terminal never carries colour onto the next line.
+export fn paint(theme: &Theme, pieces: &Array[Display.Piece]) -> Str {
+  var out: Array[Str] = []
+  for piece in pieces {
+    let start = startOf(theme, &piece.style)
+    if start.isEmpty() || piece.text.isEmpty() {
+      out = out.push(piece.text)
+    } else {
+      let body = piece.text.split("\n").map(|line: Str| if line.isEmpty() { line } else { start + line + RESET })
+      out = out.push(body.join("\n"))
+    }
+  }
+  out.join("")
+}

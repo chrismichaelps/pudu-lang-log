@@ -1,0 +1,187 @@
+/** @Log.Configuration.Builder — assembles a logger's pipeline step by step */
+module PuduLangLog.Configuration
+
+import Std.List as List
+import PuduLangLog.Clock as Clock
+import PuduLangLog.Domain.Capture as Capture
+import PuduLangLog.Enricher as Enricher
+import PuduLangLog.Filter as Filter
+import PuduLangLog.LevelSwitch as LevelSwitch
+import PuduLangLog as Log
+import PuduLangLog.Logger as Logger
+import PuduLangLog.Pipeline as Pipeline
+import PuduLangLog.SelfLog as SelfLog
+import PuduLangLog.Sink as Sink
+
+/** @Log.Configuration.Settings — every choice a pipeline is built from */
+export type Configuration = {
+  minimum: Log.Level,
+  control: Option[LevelSwitch.LevelSwitch],
+  overrides: Array[Pipeline.Override],
+  enrichers: Array[Enricher.Enricher],
+  filters: Array[Filter.Filter],
+  sinks: Array[Sink.Sink],
+  audits: Array[Sink.Sink],
+  policy: Capture.Policy,
+  selfLog: SelfLog.SelfLog,
+  clock: Clock.Clock
+}
+
+/// A configuration keeping `Information` and above, with no sinks, the default capture policy, a
+/// disabled self-log, and the system clock.
+export fn create() -> Configuration {
+  Configuration {
+    minimum: Log.Information,
+    control: None,
+    overrides: [],
+    enrichers: [],
+    filters: [],
+    sinks: [],
+    audits: [],
+    policy: Capture.defaults(),
+    selfLog: SelfLog.create(),
+    clock: Clock.system()
+  }
+}
+
+/// A configuration for a sub-logger: like `create` but keeping every level, since the parent
+/// already decided which events arrive.
+export fn nested() -> Configuration { Configuration{..create(), minimum: Log.Verbose} }
+
+/// The logger the configuration describes. Sinks are joined so one failing sink never stops the
+/// others; overrides are tried most specific first.
+export fn createLogger(configuration: &Configuration) -> Logger.Logger { Logger.fromPipeline(pipelineOf(configuration)) }
+
+/// The pipeline the configuration describes.
+export fn pipelineOf(configuration: &Configuration) -> Pipeline.Pipeline {
+  Pipeline.Pipeline {
+    minimum: configuration.minimum,
+    control: configuration.control,
+    overrides: List.sortOn(&configuration.overrides, |entry: Pipeline.Override| entry.source.toLower()).reverse(),
+    enrichers: configuration.enrichers,
+    filters: configuration.filters,
+    sink: Sink.aggregate(configuration.sinks, &configuration.selfLog),
+    audit: if configuration.audits.isEmpty() { None } else { Some(Sink.audited(configuration.audits)) },
+    policy: configuration.policy,
+    selfLog: configuration.selfLog,
+    clock: configuration.clock,
+    templates: Pipeline.templates(),
+    silent: false
+  }
+}
+
+/** @Log.Configuration.Configuring — one decision changed per call */
+export trait Configuring {
+  fn minimumLevel(self: &Self, level: Log.Level) -> Self
+  fn controlledBy(self: &Self, control: &LevelSwitch.LevelSwitch) -> Self
+  fn overrideLevel(self: &Self, source: Str, level: Log.Level) -> Self
+  fn overrideSwitch(self: &Self, source: Str, control: &LevelSwitch.LevelSwitch) -> Self
+  fn writeTo(self: &Self, sink: Sink.Sink) -> Self
+  fn writeToAtLeast(self: &Self, sink: Sink.Sink, minimum: Log.Level) -> Self
+  fn writeToControlled(self: &Self, sink: Sink.Sink, control: &LevelSwitch.LevelSwitch) -> Self
+  fn writeToWhen(self: &Self, condition: fn(&Log.Event) -> Bool, sink: Sink.Sink) -> Self
+  fn writeToLogger(self: &Self, logger: &Logger.Logger) -> Self
+  fn writeToFallible(self: &Self, sink: Sink.Sink, listener: fn(&Sink.Report) -> ()) -> Self
+  fn writeToFallbackChain(self: &Self, sinks: Array[Sink.Sink]) -> Self
+  fn auditTo(self: &Self, sink: Sink.Sink) -> Self
+  fn enrichWith(self: &Self, enricher: Enricher.Enricher) -> Self
+  fn enrichWithProperty(self: &Self, name: Str, held: Log.Value) -> Self
+  fn filterWith(self: &Self, filter: Filter.Filter) -> Self
+  fn filterExcluding(self: &Self, predicate: fn(&Log.Event) -> Bool) -> Self
+  fn filterIncludingOnly(self: &Self, predicate: fn(&Log.Event) -> Bool) -> Self
+  fn destructureByTransforming(self: &Self, tag: Str, transform: fn(Log.Value) -> Log.Value) -> Self
+  fn destructureAsScalar(self: &Self, tag: Str) -> Self
+  fn destructureWithRule(self: &Self, rule: fn(&Log.Value) -> Option[Log.Value]) -> Self
+  fn maximumDepth(self: &Self, depth: Int) -> Self
+  fn maximumStringLength(self: &Self, length: Int) -> Self
+  fn maximumCollectionCount(self: &Self, count: Int) -> Self
+  fn selfLog(self: &Self, log: &SelfLog.SelfLog) -> Self
+  fn clock(self: &Self, clock: Clock.Clock) -> Self
+}
+
+impl Configuring for Configuration {
+  /// Keeps events at or above a level, replacing any level switch.
+  fn minimumLevel(self: &Self, level: Log.Level) -> Self { Configuration{..*self, minimum: level, control: None} }
+
+  /// Keeps events a level switch allows, so the minimum can change while running.
+  fn controlledBy(self: &Self, control: &LevelSwitch.LevelSwitch) -> Self { Configuration{..*self, minimum: Log.Verbose, control: Some(*control)} }
+
+  /// Keeps events from a source prefix at or above their own level, in place of the minimum.
+  fn overrideLevel(self: &Self, source: Str, level: Log.Level) -> Self { self.overrideSwitch(source, &LevelSwitch.create(level)) }
+
+  /// Keeps events from a source prefix that a level switch allows, in place of the minimum; it
+  /// replaces an earlier override of the same prefix in any case.
+  fn overrideSwitch(self: &Self, source: Str, control: &LevelSwitch.LevelSwitch) -> Self {
+    let others = self.overrides.filter(|existing: Pipeline.Override| existing.source.toLower() != source.toLower())
+    Configuration{..*self, overrides: others.push(Pipeline.Override{source: source, control: *control})}
+  }
+
+  /// Writes events to a sink.
+  fn writeTo(self: &Self, sink: Sink.Sink) -> Self { Configuration{..*self, sinks: self.sinks.push(sink)} }
+
+  /// Writes events at or above a level to a sink; a sink can raise the level but not lower it.
+  fn writeToAtLeast(self: &Self, sink: Sink.Sink, minimum: Log.Level) -> Self { self.writeTo(Sink.restricted(sink, minimum)) }
+
+  /// Writes events a level switch allows to a sink.
+  fn writeToControlled(self: &Self, sink: Sink.Sink, control: &LevelSwitch.LevelSwitch) -> Self { self.writeTo(Sink.controlled(sink, control)) }
+
+  /// Writes events a condition accepts to a sink.
+  fn writeToWhen(self: &Self, condition: fn(&Log.Event) -> Bool, sink: Sink.Sink) -> Self { self.writeTo(Sink.conditional(sink, condition)) }
+
+  /// Writes events through another logger, whose own enrichers, filters, and sinks then apply.
+  fn writeToLogger(self: &Self, logger: &Logger.Logger) -> Self { self.writeTo(Logger.asSink(logger)) }
+
+  /// Writes events to a sink whose failures go to a listener.
+  fn writeToFallible(self: &Self, sink: Sink.Sink, listener: fn(&Sink.Report) -> ()) -> Self { self.writeTo(Sink.fallible(sink, listener)) }
+
+  /// Writes each event to the first sink of a chain that records it.
+  fn writeToFallbackChain(self: &Self, sinks: Array[Sink.Sink]) -> Self { self.writeTo(Sink.fallbackChain(sinks)) }
+
+  /// Writes events to an audit sink, whose failures `tryWrite` reports to the caller.
+  fn auditTo(self: &Self, sink: Sink.Sink) -> Self { Configuration{..*self, audits: self.audits.push(sink)} }
+
+  /// Applies an enricher to every event.
+  fn enrichWith(self: &Self, enricher: Enricher.Enricher) -> Self { Configuration{..*self, enrichers: self.enrichers.push(enricher)} }
+
+  /// Adds a property to every event that does not name it.
+  fn enrichWithProperty(self: &Self, name: Str, held: Log.Value) -> Self { self.enrichWith(Enricher.property(name, held)) }
+
+  /// Keeps only events a filter keeps.
+  fn filterWith(self: &Self, filter: Filter.Filter) -> Self { Configuration{..*self, filters: self.filters.push(filter)} }
+
+  /// Drops events a predicate accepts.
+  fn filterExcluding(self: &Self, predicate: fn(&Log.Event) -> Bool) -> Self { self.filterWith(Filter.byExcluding(predicate)) }
+
+  /// Keeps only events a predicate accepts.
+  fn filterIncludingOnly(self: &Self, predicate: fn(&Log.Event) -> Bool) -> Self { self.filterWith(Filter.byIncludingOnly(predicate)) }
+
+  /// Replaces destructured structures of a tag with the transform's answer.
+  fn destructureByTransforming(self: &Self, tag: Str, transform: fn(Log.Value) -> Log.Value) -> Self {
+    Configuration{..*self, policy: Capture.Policy{..self.policy, transforms: self.policy.transforms.push(Capture.Transform{tag: tag, apply: transform})}}
+  }
+
+  /// Captures structures of a tag as text, even when destructured.
+  fn destructureAsScalar(self: &Self, tag: Str) -> Self {
+    Configuration{..*self, policy: Capture.Policy{..self.policy, scalars: self.policy.scalars.push(tag)}}
+  }
+
+  /// Adds a rule that may replace any destructured structure; the first rule answering wins.
+  fn destructureWithRule(self: &Self, rule: fn(&Log.Value) -> Option[Log.Value]) -> Self {
+    Configuration{..*self, policy: Capture.Policy{..self.policy, custom: self.policy.custom.push(rule)}}
+  }
+
+  /// Captures at most `depth` levels of nesting.
+  fn maximumDepth(self: &Self, depth: Int) -> Self { Configuration{..*self, policy: Capture.Policy{..self.policy, maximumDepth: depth}} }
+
+  /// Cuts captured text beyond `length` characters.
+  fn maximumStringLength(self: &Self, length: Int) -> Self { Configuration{..*self, policy: Capture.Policy{..self.policy, maximumStringLength: length}} }
+
+  /// Keeps at most `count` members of each captured collection.
+  fn maximumCollectionCount(self: &Self, count: Int) -> Self { Configuration{..*self, policy: Capture.Policy{..self.policy, maximumCollectionCount: count}} }
+
+  /// Reports pipeline problems to a self-log.
+  fn selfLog(self: &Self, log: &SelfLog.SelfLog) -> Self { Configuration{..*self, selfLog: *log} }
+
+  /// Takes event timestamps from a clock.
+  fn clock(self: &Self, clock: Clock.Clock) -> Self { Configuration{..*self, clock: clock} }
+}

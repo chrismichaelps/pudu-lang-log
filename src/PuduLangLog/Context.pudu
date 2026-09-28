@@ -1,0 +1,80 @@
+/** @Log.Context.Ambient — properties pushed for a stretch of work */
+module PuduLangLog.Context
+
+import Std.Sync as Sync
+import PuduLangLog.Domain.Capture as Capture
+import PuduLangLog.Enricher as Enricher
+import PuduLangLog as Log
+
+/** @Log.Context.Stack — enrichers pushed and not yet popped */
+export type Context = { frames: Sync.Cell[Array[Enricher.Enricher]] }
+
+/** @Log.Context.Bookmark — the stack as it was before a push */
+export type Bookmark = { frames: Array[Enricher.Enricher] }
+
+/// An empty context. Give each thread of work its own, or a clone of its parent's.
+export fn create() -> Context {
+  let none: Array[Enricher.Enricher] = []
+  Context{frames: Sync.cell(none)}
+}
+
+/// The enrichers currently pushed, oldest first.
+fn framesOf(context: &Context) -> Array[Enricher.Enricher] {
+  match Sync.get(&context.frames) {
+    case Ok(frames) => frames
+    case Err(_) => []
+  }
+}
+
+/// Pushes an enricher and answers the bookmark that pops it.
+export fn push(context: &Context, frame: Enricher.Enricher) -> Bookmark {
+  let before = framesOf(context)
+  let _stored = Sync.set(&context.frames, before.push(frame))
+  Bookmark{frames: before}
+}
+
+/// Pushes a property and answers the bookmark that pops it.
+export fn pushProperty(context: &Context, name: Str, held: Log.Value) -> Bookmark { push(context, Enricher.property(name, held)) }
+
+/// Pushes a destructured property and answers the bookmark that pops it.
+export fn pushDestructured(context: &Context, name: Str, held: Log.Value) -> Bookmark { push(context, Enricher.destructured(name, held)) }
+
+/// Puts the stack back as it was when the bookmark was taken.
+export fn restore(context: &Context, bookmark: Bookmark) -> () {
+  let _stored = Sync.set(&context.frames, bookmark.frames)
+}
+
+/// Runs an action with a property pushed, popping it afterwards.
+export fn using[T](context: &Context, name: Str, held: Log.Value, action: fn() -> T) -> T {
+  let bookmark = pushProperty(context, name, held)
+  let result = action()
+  restore(context, bookmark)
+  result
+}
+
+/// An independent context holding the same enrichers, for work started on another thread.
+export fn clone(context: &Context) -> Context { Context{frames: Sync.cell(framesOf(context))} }
+
+/// Empties the stack until the bookmark is restored.
+export fn suspend(context: &Context) -> Bookmark {
+  let before = framesOf(context)
+  let none: Array[Enricher.Enricher] = []
+  let _stored = Sync.set(&context.frames, none)
+  Bookmark{frames: before}
+}
+
+/// Empties the stack.
+export fn reset(context: &Context) -> () {
+  let _suspended = suspend(context)
+}
+
+/// The enricher that applies the context's properties, the most recent first, so an inner push
+/// wins over an outer one of the same name.
+export fn enricher(context: &Context) -> Enricher.Enricher {
+  let shared = *context
+  fn(event: Log.Event, policy: &Capture.Policy) -> Log.Event {
+    var current = event
+    for frame in framesOf(&shared).reverse() { current = frame(current, policy) }
+    current
+  }
+}

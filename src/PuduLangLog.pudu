@@ -1,0 +1,71 @@
+/** @Log.Root.Vocabulary — levels, captured values, templates, and events */
+module PuduLangLog
+
+/** @Log.Level.Scale — how much an event matters, least first */
+export type Level = Verbose | Debug | Information | Warning | Error | Fatal
+
+/// Every level, least severe first.
+export const LEVELS: Array[Level] = [Verbose, Debug, Information, Warning, Error, Fatal]
+
+/** @Log.Timestamp.Instant — a UTC moment and its observer's offset */
+export type Timestamp = { millis: Int, offset: Int }
+
+/** @Log.Scalar.Atom — one indivisible captured value */
+export type Scalar = Null | Boolean(Bool) | Integer(Int) | Real(Float64) | Exact(Decimal) | Text(Str) | Moment(Timestamp) | Span(Int) | Binary(Bytes)
+
+/** @Log.Value.Captured — a property value as the pipeline carries it */
+export type Value = Scalar(Scalar) | Sequence(Array[Value]) | Structure(Structure) | Dictionary(Array[Entry])
+
+/** @Log.Structure.Record — named properties under an optional type tag */
+export type Structure = { tag: Option[Str], properties: Array[Property] }
+
+/** @Log.Entry.Pair — one dictionary key and its value */
+export type Entry = { key: Scalar, value: Value }
+
+/** @Log.Property.Named — a name bound to a captured value */
+export type Property = { name: Str, value: Value }
+
+/** @Log.Hint.Capture — how a hole captures its argument */
+export type Hint = Default | Destructure | Stringify
+
+/** @Log.Alignment.Padding — the width and side of padding */
+export type Alignment = { left: Bool, width: Int }
+
+/** @Log.Hole.Token — one property placeholder in a template */
+export type Hole = {
+  name: Str,
+  raw: Str,
+  format: Option[Str],
+  alignment: Option[Alignment],
+  hint: Hint,
+  position: Option[Int]
+}
+
+/** @Log.Token.Piece — literal text or a placeholder */
+export type Token = Literal(Str) | Placeholder(Hole)
+
+/** @Log.Binding.Mode — how holes take their arguments */
+export type Binding = Unbound | Named | Positional
+
+/** @Log.Template.Parsed — a message template and its tokens */
+export type Template = { text: Str, tokens: Array[Token], holes: Array[Hole], binding: Binding }
+
+/** @Log.Failure.Error — an error value attached to an event */
+export type Failure = { kind: Str, message: Str, trace: Array[Str], causes: Array[Failure] }
+
+/** @Log.Event.Record — one log event as sinks receive it */
+export type Event = {
+  timestamp: Timestamp,
+  level: Level,
+  template: Template,
+  properties: Array[Property],
+  failure: Option[Failure],
+  traceId: Option[Str],
+  spanId: Option[Str]
+}
+
+/** @Log.RollingInterval.Period — how often a file sink starts afresh */
+export type RollingInterval = Infinite | Year | Month | Day | Hour | Minute
+
+/** @Log.Formatter.Text — renders an event as text */
+export type Formatter = fn(&Event) -> Str

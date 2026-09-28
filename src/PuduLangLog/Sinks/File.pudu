@@ -1,0 +1,193 @@
+/** @Log.Sinks.File.Sink — events appended to rolling files */
+module PuduLangLog.Sinks.File
+
+import Std.Concurrent as Concurrent
+import Std.Io as Io
+import Std.Option as Option
+import Std.Result as Result
+import Std.Sync as Sync
+import PuduLangLog.Constants.Names as Names
+import PuduLangLog.Domain.Rolling as Rolling
+import PuduLangLog.Formatting.Text as Text
+import PuduLangLog as Log
+import PuduLangLog.Sink as Sink
+
+/** @Log.Sinks.File.Options — path, layout, rolling, retention, and buffering */
+export type Options = {
+  path: Str,
+  formatter: fn(&Log.Event) -> Str,
+  fileSizeLimitBytes: Option[Int],
+  rollingInterval: Log.RollingInterval,
+  rollOnFileSizeLimit: Bool,
+  retainedFileCountLimit: Option[Int],
+  retainedFileTimeLimit: Option[Int],
+  buffered: Bool,
+  flushInterval: Option[Int],
+  onOpened: Option[fn(Str) -> Option[Str]],
+  onDeleting: Option[fn(Str) -> ()]
+}
+
+/** @Log.Sinks.File.State — the open file and what is waiting for it */
+type State = { file: Str, period: Option[Int], sequence: Option[Int], size: Int, pending: Array[Str], closed: Bool }
+
+/// One gibibyte, the default size limit of a file.
+const GIBIBYTE: Int = 1073741824
+
+/// How often a flushing thread checks whether the sink closed, in milliseconds.
+const CHECK_EVERY: Int = 50
+
+/// The file template, one file without rolling, a one-gibibyte limit, thirty-one retained files,
+/// and unbuffered writes.
+export fn defaults(path: Str) -> Options {
+  Options {
+    path: path,
+    formatter: Text.template(Names.FILE_TEMPLATE),
+    fileSizeLimitBytes: Some(GIBIBYTE),
+    rollingInterval: Log.Infinite,
+    rollOnFileSizeLimit: false,
+    retainedFileCountLimit: Some(31),
+    retainedFileTimeLimit: None,
+    buffered: false,
+    flushInterval: None,
+    onOpened: None,
+    onDeleting: None
+  }
+}
+
+/// A sink appending each event to the file of its period. A file that reached its size limit takes
+/// no more events, or gives way to the next sequence when rolling on size; opening a file removes
+/// the files retention no longer keeps. Buffered text is written on flush and close.
+export fn sink(options: Options) -> Sink.Sink {
+  let none: Array[Str] = []
+  let state = Sync.cell(State{file: "", period: None, sequence: None, size: 0, pending: none, closed: false})
+  let lock = Sync.mutex()
+  let flush = fn() -> () {
+    let _flushed = Sync.withLock(&lock, fn() -> () { let _written = writePending(&state) })
+  }
+  if let Some(every) = options.flushInterval { startFlushing(every, &state, flush) }
+  Sink {
+    ..Sink.none(),
+    emit: fn(event: &Log.Event) -> Result[(), Str] {
+      let text = (options.formatter)(event)
+      match Sync.withLock(&lock, fn() -> Result[(), Str] { write(&options, &state, event, text) }) {
+        case Ok(outcome) => outcome
+        case Err(_) => Err("the file lock could not be taken")
+      }
+    },
+    flush: flush,
+    close: fn() -> () {
+      let _closed = Sync.withLock(&lock, fn() -> () {
+          let _written = writePending(&state)
+          update(&state, fn(current: State) -> State { State{..current, closed: true} })
+        })
+    }
+  }
+}
+
+/// The state held by the cell.
+fn stateOf(state: &Sync.Cell[State]) -> State {
+  match Sync.get(state) {
+    case Ok(current) => current
+    case Err(_) => State{file: "", period: None, sequence: None, size: 0, pending: [], closed: true}
+  }
+}
+
+/// Stores a changed state.
+fn update(state: &Sync.Cell[State], change: fn(State) -> State) -> () {
+  let _stored = Sync.set(state, change(stateOf(state)))
+}
+
+/// Writes one event's text, opening the file of its period and rolling on size as configured.
+fn write(options: &Options, state: &Sync.Cell[State], event: &Log.Event, text: Str) -> Result[(), Str] {
+  if stateOf(state).closed { return Err("the file sink is closed") }
+  let period = Rolling.checkpoint(options.rollingInterval, &event.timestamp)
+  let current = stateOf(state)
+  if current.file.isEmpty() || current.period != period { open(options, state, event, period, None) ? }
+  if full(options, &stateOf(state)) {
+    if !options.rollOnFileSizeLimit { return Ok(()) }
+    writePending(state) ?
+    open(options, state, event, period, Some(Option.unwrapOr(stateOf(state).sequence, 0) + 1)) ?
+  }
+  let size = text.toBytes().length()
+  if options.buffered {
+    update(state, fn(held: State) -> State { State{..held, pending: held.pending.push(text), size: held.size + size} })
+    return Ok(())
+  }
+  Io.append(stateOf(state).file, text) ?
+  update(state, fn(held: State) -> State { State{..held, size: held.size + size} })
+  Ok(())
+}
+
+/// Whether the open file has reached the size limit.
+fn full(options: &Options, current: &State) -> Bool {
+  match options.fileSizeLimitBytes {
+    case Some(limit) => current.size >= limit
+    case None => false
+  }
+}
+
+/// Opens the file of a period: the given sequence, or the latest one already on disk. Writes the
+/// header of a new file and applies retention.
+fn open(options: &Options, state: &Sync.Cell[State], event: &Log.Event, period: Option[Int], wanted: Option[Int]) -> Result[(), Str] {
+  writePending(state) ?
+  let directory = Io.directoryOf(options.path)
+  let listed = if directory.isEmpty() { Io.list(".") } else { Io.list(directory) }
+  let names = Result.unwrapOr(listed, [])
+  var rolled: Array[Rolling.Rolled] = []
+  for name in names {
+    if let Some(found) = Rolling.matches(options.path, options.rollingInterval, name) { rolled = rolled.push(found) }
+  }
+  let sequence = match wanted {
+    case Some(number) => Some(number)
+    case None => Rolling.latestSequence(&rolled, period)
+  }
+  let file = Rolling.fileName(options.path, options.rollingInterval, &event.timestamp, sequence)
+  if !directory.isEmpty() { Io.makeDirectory(directory) ? }
+  let existing = if Io.exists(file) { Result.unwrapOr(Io.countBytes(file), 0) } else { 0 }
+  if existing == 0 {
+    if let Some(hook) = options.onOpened {
+      if let Some(header) = hook(file) { Io.append(file, header) ? }
+    }
+  }
+  let size = if Io.exists(file) { Result.unwrapOr(Io.countBytes(file), 0) } else { 0 }
+  update(state, fn(held: State) -> State { State{..held, file: file, period: period, sequence: sequence, size: size} })
+  retire(options, &rolled, Io.nameOf(file), event)
+  Ok(())
+}
+
+/// Deletes the files retention no longer keeps, calling the deleting hook first.
+fn retire(options: &Options, rolled: &Array[Rolling.Rolled], current: Str, event: &Log.Event) -> () {
+  let local = event.timestamp.millis + event.timestamp.offset * 60000
+  let oldest = Option.map(options.retainedFileTimeLimit, |limit: Int| local - limit)
+  let directory = Io.directoryOf(options.path)
+  for name in Rolling.retired(rolled, current, options.retainedFileCountLimit, oldest) {
+    let path = if directory.isEmpty() { name } else { Io.join(directory, name) }
+    if let Some(hook) = options.onDeleting { hook(path) }
+    let _removed = Io.removeIfPresent(path)
+  }
+}
+
+/// Writes buffered text to the open file.
+fn writePending(state: &Sync.Cell[State]) -> Result[(), Str] {
+  let current = stateOf(state)
+  if current.pending.isEmpty() { return Ok(()) }
+  Io.append(current.file, current.pending.join("")) ?
+  update(state, fn(held: State) -> State { State{..held, pending: []} })
+  Ok(())
+}
+
+/// Starts a thread that flushes every `every` milliseconds until the sink closes.
+fn startFlushing(every: Int, state: &Sync.Cell[State], flush: fn() -> ()) -> () {
+  let shared = *state
+  let _started = Concurrent.start(fn() -> () {
+      var waited = 0
+      while !stateOf(&shared).closed {
+        let _slept = Concurrent.sleep(CHECK_EVERY)
+        waited = waited + CHECK_EVERY
+        if waited >= every {
+          flush()
+          waited = 0
+        }
+      }
+    })
+}
