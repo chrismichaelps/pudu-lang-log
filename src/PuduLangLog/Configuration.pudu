@@ -48,10 +48,6 @@ export fn create() -> Configuration {
 /// already decided which events arrive.
 export fn nested() -> Configuration { Configuration{..create(), minimum: Log.Verbose} }
 
-/// The logger the configuration describes. Sinks are joined so one failing sink never stops the
-/// others; overrides are tried most specific first.
-export fn createLogger(configuration: &Configuration) -> Logger.Logger { Logger.fromPipeline(pipelineOf(configuration)) }
-
 /// The pipeline the configuration describes.
 export fn pipelineOf(configuration: &Configuration) -> Pipeline.Pipeline {
   Pipeline.Pipeline {
@@ -72,6 +68,8 @@ export fn pipelineOf(configuration: &Configuration) -> Pipeline.Pipeline {
 
 /** @Log.Configuration.Configuring — one decision changed per call */
 export trait Configuring {
+  fn createLogger(self: &Self) -> Logger.Logger
+  fn createReloadableLogger(self: &Self) -> Logger.Logger
   fn minimumLevel(self: &Self, level: Log.Level) -> Self
   fn controlledBy(self: &Self, control: &LevelSwitch.LevelSwitch) -> Self
   fn overrideLevel(self: &Self, source: Str, level: Log.Level) -> Self
@@ -100,6 +98,14 @@ export trait Configuring {
 }
 
 impl Configuring for Configuration {
+  /// The logger the configuration describes. Sinks are joined so one failing sink never stops the
+  /// others; overrides are tried most specific first.
+  fn createLogger(self: &Self) -> Logger.Logger { Logger.fromPipeline(pipelineOf(self)) }
+
+  /// A logger whose pipeline `Logger.reload` can later replace with another configuration's, for
+  /// logging during startup before the full configuration is read.
+  fn createReloadableLogger(self: &Self) -> Logger.Logger { Logger.reloadable(pipelineOf(self)) }
+
   /// Keeps events at or above a level, replacing any level switch.
   fn minimumLevel(self: &Self, level: Log.Level) -> Self { Configuration{..*self, minimum: level, control: None} }
 

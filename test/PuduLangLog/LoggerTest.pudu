@@ -43,7 +43,7 @@ fn linesOf(lines: &Sync.Cell[Array[Str]]) -> Array[Str] {
 /// Runs the suite.
 fn main() -> Int {
   let memory = Memory.create()
-  let logger = Configuration.createLogger(&base(&memory))
+  let logger = base(&memory).createLogger()
   logger.information("Disk \{Disk\} is \{Percent\}% full", [Value.text("C"), Value.int(93)])
   logger.debug("Hidden", [])
   let first = Memory.events(&memory)[0]
@@ -54,14 +54,14 @@ fn main() -> Int {
   LevelSwitch.onChange(&control, fn(_old: Log.Level, _new: Log.Level) -> () {
       if let Ok(count) = Sync.get(&changes) { let _stored = Sync.set(&changes, count + 1) }
     })
-  let switched = Configuration.createLogger(&base(&switchMemory).controlledBy(&control))
+  let switched = base(&switchMemory).controlledBy(&control).createLogger()
   switched.information("before", [])
   LevelSwitch.set(&control, Log.Debug)
   LevelSwitch.set(&control, Log.Debug)
   switched.information("after", [])
 
   let overrideMemory = Memory.create()
-  let overridden = Configuration.createLogger(&base(&overrideMemory).overrideLevel("App.Noisy", Log.Warning).overrideLevel("App.Noisy.Important", Log.Debug).minimumLevel(Log.Information))
+  let overridden = base(&overrideMemory).overrideLevel("App.Noisy", Log.Warning).overrideLevel("App.Noisy.Important", Log.Debug).minimumLevel(Log.Information).createLogger()
   overridden.forSource("App.Noisy.Cache").information("noisy info", [])
   overridden.forSource("App.Noisy.Cache").warning("noisy warning", [])
   overridden.forSource("app.noisy.important").debug("important debug", [])
@@ -71,7 +71,7 @@ fn main() -> Int {
   let contextMemory = Memory.create()
   let noLines: Array[Str] = []
   let lines = Sync.cell(noLines)
-  let contextual = Configuration.createLogger(&base(&contextMemory).enrichWithProperty("App", Value.text("demo")).selfLog(&collecting(&lines)))
+  let contextual = base(&contextMemory).enrichWithProperty("App", Value.text("demo")).selfLog(&collecting(&lines)).createLogger()
   let job = contextual.forContext("JobId", Value.int(7)).forContext("JobId", Value.int(8))
   job.information("Job \{Step\}", [Value.text("start")])
   job.information("Explicit \{JobId\}", [Value.int(1)])

@@ -35,7 +35,7 @@ pipeline or a contextual logger.
 
 1. An enricher takes an event and the pipeline's capture policy and answers the enriched event.
 2. `property`, `destructured`, and `computed` add a property only when the event lacks that name,
-   capturing the value under the pipeline's policy.
+   capturing the value under the pipeline's policy; `computed` destructures when asked.
 3. `when`, `atLevel`, and `atSwitch` apply another enricher conditionally; `all` applies several in
    order; `from` wraps any function over events.
 

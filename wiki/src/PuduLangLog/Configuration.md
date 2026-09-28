@@ -41,7 +41,9 @@ clock — and creates the logger.
 3. Sink methods wrap with [[src/PuduLangLog/Sink]]: `writeToAtLeast`, `writeToControlled`,
    `writeToWhen`, `writeToLogger`, `writeToFallible`, and `writeToFallbackChain`.
 4. Destructuring methods change the capture policy.
-5. `pipelineOf` joins the sinks with `Sink.aggregate`, joins audit sinks with `Sink.audited`, and
+5. `createLogger` builds a logger over the pipeline; `createReloadableLogger` builds one whose
+   pipeline `Logger.reload` can replace, for logging before the full configuration is known.
+6. `pipelineOf` joins the sinks with `Sink.aggregate`, joins audit sinks with `Sink.audited`, and
    sorts overrides by lower-cased prefix, descending, so `App.Web` is tried before `App`.
 
 ## Negative Logic (Prohibited Paths)

@@ -24,12 +24,14 @@ fn captured(name: Str, held: Log.Value, hint: Log.Hint) -> Enricher {
   }
 }
 
-/// Adds a property computed from the event unless the event already has one of that name.
-export fn computed(name: Str, compute: fn(&Log.Event) -> Log.Value) -> Enricher {
+/// Adds a property computed from the event unless the event already has one of that name, keeping
+/// structures when `destructure` is set.
+export fn computed(name: Str, compute: fn(&Log.Event) -> Log.Value, destructure: Bool) -> Enricher {
+  let hint = if destructure { Log.Destructure } else { Log.Default }
   fn(event: Log.Event, policy: &Capture.Policy) -> Log.Event {
     if Properties.has(&event.properties, name) { return event }
     let held = compute(&event)
-    Log.Event{..event, properties: event.properties.push(Log.Property{name: name, value: Capture.capture(policy, &held, Log.Default)})}
+    Log.Event{..event, properties: event.properties.push(Log.Property{name: name, value: Capture.capture(policy, &held, hint)})}
   }
 }
 

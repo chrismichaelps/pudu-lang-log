@@ -48,54 +48,54 @@ fn main() -> Int {
   let all = Memory.create()
   let errors = Memory.create()
   let when = Memory.create()
-  let layered = Configuration.createLogger(&base().minimumLevel(Log.Debug).writeTo(Memory.sink(&all)).writeToAtLeast(Memory.sink(&errors), Log.Error).writeToWhen(Filter.withProperty("Audit"), Memory.sink(&when)))
+  let layered = base().minimumLevel(Log.Debug).writeTo(Memory.sink(&all)).writeToAtLeast(Memory.sink(&errors), Log.Error).writeToWhen(Filter.withProperty("Audit"), Memory.sink(&when)).createLogger()
   layered.debug("d", [])
   layered.error("e", [])
   layered.forContext("Audit", Value.bool(true)).information("audited", [])
 
   let sinkSwitch = LevelSwitch.create(Log.Warning)
   let controlled = Memory.create()
-  let switched = Configuration.createLogger(&base().writeToControlled(Memory.sink(&controlled), &sinkSwitch))
+  let switched = base().writeToControlled(Memory.sink(&controlled), &sinkSwitch).createLogger()
   switched.information("quiet", [])
   LevelSwitch.set(&sinkSwitch, Log.Information)
   switched.information("heard", [])
 
   let parent = Memory.create()
   let child = Memory.create()
-  let subLogger = Configuration.createLogger(&Configuration.nested().enrichWithProperty("Child", Value.bool(true)).filterExcluding(Filter.fromSource("App.Secret")).writeTo(Memory.sink(&child)))
-  let topLevel = Configuration.createLogger(&base().writeTo(Memory.sink(&parent)).writeToLogger(&subLogger))
+  let subLogger = Configuration.nested().enrichWithProperty("Child", Value.bool(true)).filterExcluding(Filter.fromSource("App.Secret")).writeTo(Memory.sink(&child)).createLogger()
+  let topLevel = base().writeTo(Memory.sink(&parent)).writeToLogger(&subLogger).createLogger()
   topLevel.information("shared", [])
   topLevel.forSource("App.Secret").information("secret", [])
 
   let survivors = Memory.create()
   let audits = Memory.create()
-  let audited = Configuration.createLogger(&base().writeTo(broken()).writeTo(Memory.sink(&survivors)).auditTo(Memory.sink(&audits)))
+  let audited = base().writeTo(broken()).writeTo(Memory.sink(&survivors)).auditTo(Memory.sink(&audits)).createLogger()
   let normal = audited.tryWrite(Log.Information, None, "kept", [])
-  let failingAudit = Configuration.createLogger(&base().auditTo(broken()).auditTo(Memory.sink(&audits)))
+  let failingAudit = base().auditTo(broken()).auditTo(Memory.sink(&audits)).createLogger()
   let refused = failingAudit.tryWrite(Log.Information, None, "refused", [])
 
   let fallback = Memory.create()
-  let chained = Configuration.createLogger(&base().writeToFallbackChain([broken(), Memory.sink(&fallback)]))
+  let chained = base().writeToFallbackChain([broken(), Memory.sink(&fallback)]).createLogger()
   chained.information("fell back", [])
   let reports = counter()
-  let fallible = Configuration.createLogger(&base().writeToFallible(broken(), fn(report: &Sink.Report) -> () {
-        if report.kind == Sink.Permanent && report.events.length() == 1 { bump(&reports) }
-      }))
+  let fallible = base().writeToFallible(broken(), fn(report: &Sink.Report) -> () {
+      if report.kind == Sink.Permanent && report.events.length() == 1 { bump(&reports) }
+    }).createLogger()
   fallible.information("lost", [])
 
   let enriched = Memory.create()
-  let enrichers = Configuration.createLogger(&base().minimumLevel(Log.Verbose).writeTo(Memory.sink(&enriched)).enrichWith(Enricher.atLevel(Log.Error, Enricher.property("Alert", Value.bool(true)))).enrichWith(Enricher.when(Filter.withProperty("User"), Enricher.computed("UserLength", fn(event: &Log.Event) -> Log.Value {
-            match Event.property(event, "User") {
-              case Some(Log.Scalar(Log.Text(name))) => Value.int(name.length())
-              case _ => Value.nothing()
-            }
-          }))).enrichWith(Enricher.from(fn(event: Log.Event) -> Log.Event { Event.withoutProperty(&event, "Secret") })).enrichWith(Enricher.destructured("Build", Value.structure("Build", [("Number", Value.int(42))]))))
+  let enrichers = base().minimumLevel(Log.Verbose).writeTo(Memory.sink(&enriched)).enrichWith(Enricher.atLevel(Log.Error, Enricher.property("Alert", Value.bool(true)))).enrichWith(Enricher.when(Filter.withProperty("User"), Enricher.computed("UserLength", fn(event: &Log.Event) -> Log.Value {
+          match Event.property(event, "User") {
+            case Some(Log.Scalar(Log.Text(name))) => Value.int(name.length())
+            case _ => Value.nothing()
+          }
+        }, false))).enrichWith(Enricher.from(fn(event: Log.Event) -> Log.Event { Event.withoutProperty(&event, "Secret") })).enrichWith(Enricher.destructured("Build", Value.structure("Build", [("Number", Value.int(42))]))).createLogger()
   enrichers.error("boom \{User\} \{Secret\}", [Value.text("ada"), Value.text("hunter2")])
   enrichers.verbose("fine", [])
   let enrichedFirst = Memory.events(&enriched)[0]
 
   let filtered = Memory.create()
-  let filtering = Configuration.createLogger(&base().writeTo(Memory.sink(&filtered)).filterIncludingOnly(Filter.anyOf([Filter.atLeast(Log.Warning), Filter.withPropertyValue("Keep", Value.bool(true))])).filterExcluding(Filter.withPropertyWhere("Size", fn(held: &Log.Value) -> Bool { held == &Value.int(0) })))
+  let filtering = base().writeTo(Memory.sink(&filtered)).filterIncludingOnly(Filter.anyOf([Filter.atLeast(Log.Warning), Filter.withPropertyValue("Keep", Value.bool(true))])).filterExcluding(Filter.withPropertyWhere("Size", fn(held: &Log.Value) -> Bool { held == &Value.int(0) })).createLogger()
   filtering.information("dropped", [])
   filtering.information("kept \{Keep\}", [Value.bool(true)])
   filtering.warning("warned \{Size\}", [Value.int(1)])
@@ -103,7 +103,7 @@ fn main() -> Int {
 
   let ambient = Context.create()
   let ambientMemory = Memory.create()
-  let ambientLogger = Configuration.createLogger(&base().writeTo(Memory.sink(&ambientMemory)).enrichWith(Context.enricher(&ambient)))
+  let ambientLogger = base().writeTo(Memory.sink(&ambientMemory)).enrichWith(Context.enricher(&ambient)).createLogger()
   let outer = Context.pushProperty(&ambient, "Request", Value.text("r1"))
   let inner = Context.pushProperty(&ambient, "Request", Value.text("r2"))
   ambientLogger.information("inner", [])
@@ -125,7 +125,7 @@ fn main() -> Int {
 
   let lifecycle = counter()
   let lifecycleSink = Sink.Sink{..Sink.none(), flush: fn() -> () { bump(&lifecycle) }, close: fn() -> () { bump(&lifecycle) }}
-  let closing = Configuration.createLogger(&base().writeTo(lifecycleSink))
+  let closing = base().writeTo(lifecycleSink).createLogger()
   Logger.close(&closing)
 
   let first = Memory.create()
@@ -137,7 +137,7 @@ fn main() -> Int {
   derived.information("two", [])
 
   let traced = Memory.create()
-  let tracing = Configuration.createLogger(&base().writeTo(Memory.sink(&traced))).withTrace("abc", "def")
+  let tracing = base().writeTo(Memory.sink(&traced)).createLogger().withTrace("abc", "def")
   tracing.writeFailure(Log.Error, Failure.of("IoError", "full"), "failed", [])
   let manual = Event.create(NOW, Log.Debug, "manual", [])
   let dropped = tracing.emit(manual)
@@ -145,7 +145,7 @@ fn main() -> Int {
   let (template, bound) = tracing.bindTemplate("\{A\}", [Value.int(1)])
 
   let destructured = Memory.create()
-  let destructuring = Configuration.createLogger(&base().writeTo(Memory.sink(&destructured)).destructureByTransforming("Card", fn(_held: Log.Value) -> Log.Value { Value.structure("Card", [("Last4", Value.text("1234"))]) }).destructureAsScalar("Token").maximumStringLength(4).maximumCollectionCount(2).maximumDepth(3).destructureWithRule(fn(held: &Log.Value) -> Option[Log.Value] { if held == &Value.object([]) { Some(Value.text("empty")) } else { None } }))
+  let destructuring = base().writeTo(Memory.sink(&destructured)).destructureByTransforming("Card", fn(_held: Log.Value) -> Log.Value { Value.structure("Card", [("Last4", Value.text("1234"))]) }).destructureAsScalar("Token").maximumStringLength(4).maximumCollectionCount(2).maximumDepth(3).destructureWithRule(fn(held: &Log.Value) -> Option[Log.Value] { if held == &Value.object([]) { Some(Value.text("empty")) } else { None } }).createLogger()
   destructuring.information("\{@Card\} \{@Token\} \{Name\} \{List\} \{@Nothing\}", [Value.structure("Card", [("Number", Value.text("4111111111111111"))]), Value.structure("Token", []), Value.text("abcdef"), Value.list([Value.int(1), Value.int(2), Value.int(3)]), Value.object([])])
 
   let checks = Test.suite("Topology", &[

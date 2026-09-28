@@ -15,7 +15,7 @@ import PuduLangLog.Value as Value
 /// Runs the suite.
 fn main() -> Int {
   let memory = Memory.create()
-  let logger = Configuration.createLogger(&Configuration.create().clock(Clock.fixed(Log.Timestamp{millis: 0, offset: 0})).writeTo(Memory.sink(&memory)))
+  let logger = Configuration.create().clock(Clock.fixed(Log.Timestamp{millis: 0, offset: 0})).writeTo(Memory.sink(&memory)).createLogger()
   let empty = Memory.latest(&memory)
   logger.information("Order \{Id\} placed", [Value.int(1)])
   logger.warning("Order \{Id\} late", [Value.int(2)])
@@ -24,10 +24,10 @@ fn main() -> Int {
   let warnings = Memory.matching(&memory, fn(event: &Log.Event) -> Bool { event.level == Log.Warning })
   let latest = Memory.latest(&memory)
   let recent = Memory.bounded(2)
-  let bounded = Configuration.createLogger(&Configuration.create().writeTo(Memory.sink(&recent)))
+  let bounded = Configuration.create().writeTo(Memory.sink(&recent)).createLogger()
   for number in [1, 2, 3] { bounded.information("\{N\}", [Value.int(number)]) }
   let shared = Memory.create()
-  let concurrent = Configuration.createLogger(&Configuration.create().writeTo(Memory.sink(&shared)))
+  let concurrent = Configuration.create().writeTo(Memory.sink(&shared)).createLogger()
   var actions: Array[fn() -> ()] = []
   for _worker in [1, 2, 3, 4] {
     actions = actions.push(fn() -> () { for number in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] { concurrent.information("\{N\}", [Value.int(number)]) } })
