@@ -1,0 +1,303 @@
+/** @Log.Expressions.Parser.Grammar — tokens into an expression tree */
+module PuduLangLog.Expressions.Parser
+
+import Std.Decimal as Decimal
+import Std.List as List
+import Std.Set as Set
+import PuduLangLog.Expressions.Lexer as Lexer
+import PuduLangLog.Expressions.Syntax as Syntax
+import PuduLangLog as Log
+
+/// The comparison operators.
+const COMPARISONS: Set[Str] = setOf(["=", "<>", "<", "<=", ">", ">="])
+
+/// Hexadecimal digits by value.
+const HEX: Str = "0123456789abcdef"
+
+/** @Log.Expressions.Parser.Step — a parsed part and the index after it */
+type Step = Result[(Syntax.Expression, Int), Str]
+
+/// The expression the whole text denotes, or where and why it could not be read.
+export fn parse(text: Str) -> Result[Syntax.Expression, Str] {
+  let found = Lexer.tokens(text) ?
+  let (expression, next) = expressionAt(&found, 0) ?
+  if found[next].kind != Lexer.End { return Err(unexpected(&found[next])) }
+  Ok(expression)
+}
+
+/// The expression starting at a token, and the index after it; used by templates to read holes.
+export fn expressionAt(found: &Array[Lexer.Token], start: Int) -> Step {
+  if isKeyword(found, start, "if") {
+    let (condition, afterCondition) = expressionAt(found, start + 1) ?
+    let afterThen = expect(found, afterCondition, "then") ?
+    let (then, afterValue) = expressionAt(found, afterThen) ?
+    let afterElse = expect(found, afterValue, "else") ?
+    let (otherwise, end) = expressionAt(found, afterElse) ?
+    return Ok((Syntax.Conditional(condition, then, otherwise), end))
+  }
+  either(found, start)
+}
+
+/// A chain of `or`.
+fn either(found: &Array[Lexer.Token], start: Int) -> Step {
+  var (left, next) = both(found, start) ?
+  while isKeyword(found, next, "or") {
+    let (right, after) = both(found, next + 1) ?
+    left = Syntax.Binary("or", left, right, false)
+    next = after
+  }
+  Ok((left, next))
+}
+
+/// A chain of `and`.
+fn both(found: &Array[Lexer.Token], start: Int) -> Step {
+  var (left, next) = negation(found, start) ?
+  while isKeyword(found, next, "and") {
+    let (right, after) = negation(found, next + 1) ?
+    left = Syntax.Binary("and", left, right, false)
+    next = after
+  }
+  Ok((left, next))
+}
+
+/// `not` applied to a comparison, any number of times.
+fn negation(found: &Array[Lexer.Token], start: Int) -> Step {
+  if isKeyword(found, start, "not") {
+    let (operand, next) = negation(found, start + 1) ?
+    return Ok((Syntax.Unary("not", operand), next))
+  }
+  comparison(found, start)
+}
+
+/// An additive expression, optionally compared, matched with `like`, tested with `in`, or checked
+/// with `is null`; `ci` after the right side makes text comparisons ignore case.
+fn comparison(found: &Array[Lexer.Token], start: Int) -> Step {
+  let (left, next) = additive(found, start) ?
+  let token = found[next]
+  if token.kind == Lexer.Symbol && Set.contains(&COMPARISONS, token.text) { return compared(found, next + 1, token.text, left) }
+  if isKeyword(found, next, "like") || isKeyword(found, next, "in") { return compared(found, next + 1, token.text, left) }
+  if isKeyword(found, next, "not") && (isKeyword(found, next + 1, "like") || isKeyword(found, next + 1, "in")) {
+    let (inner, after) = compared(found, next + 2, found[next + 1].text, left) ?
+    return Ok((Syntax.Unary("not", inner), after))
+  }
+  if isKeyword(found, next, "is") {
+    let negated = isKeyword(found, next + 1, "not")
+    let at = if negated { next + 2 } else { next + 1 }
+    let after = expect(found, at, "null") ?
+    let test = Syntax.Binary("is null", left, Syntax.Constant(Log.Scalar(Log.Null)), false)
+    return Ok((if negated { Syntax.Unary("not", test) } else { test }, after))
+  }
+  Ok((left, next))
+}
+
+/// The right side of a binary comparison and an optional `ci`.
+fn compared(found: &Array[Lexer.Token], start: Int, operator: Str, left: Syntax.Expression) -> Step {
+  let (right, next) = additive(found, start) ?
+  let ignoring = isKeyword(found, next, "ci")
+  Ok((Syntax.Binary(operator, left, right, ignoring), if ignoring { next + 1 } else { next }))
+}
+
+/// A chain of `+` and `-`.
+fn additive(found: &Array[Lexer.Token], start: Int) -> Step {
+  var (left, next) = multiplicative(found, start) ?
+  while isSymbol(found, next, "+") || isSymbol(found, next, "-") {
+    let operator = found[next].text
+    let (right, after) = multiplicative(found, next + 1) ?
+    left = Syntax.Binary(operator, left, right, false)
+    next = after
+  }
+  Ok((left, next))
+}
+
+/// A chain of `*`, `/`, and `%`.
+fn multiplicative(found: &Array[Lexer.Token], start: Int) -> Step {
+  var (left, next) = power(found, start) ?
+  while isSymbol(found, next, "*") || isSymbol(found, next, "/") || isSymbol(found, next, "%") {
+    let operator = found[next].text
+    let (right, after) = power(found, next + 1) ?
+    left = Syntax.Binary(operator, left, right, false)
+    next = after
+  }
+  Ok((left, next))
+}
+
+/// A power, grouping to the right.
+fn power(found: &Array[Lexer.Token], start: Int) -> Step {
+  let (base, next) = negative(found, start) ?
+  if !isSymbol(found, next, "^") { return Ok((base, next)) }
+  let (exponent, after) = power(found, next + 1) ?
+  Ok((Syntax.Binary("^", base, exponent, false), after))
+}
+
+/// A unary minus, any number of times.
+fn negative(found: &Array[Lexer.Token], start: Int) -> Step {
+  if isSymbol(found, start, "-") {
+    let (operand, next) = negative(found, start + 1) ?
+    return Ok((Syntax.Unary("-", operand), next))
+  }
+  postfix(found, start)
+}
+
+/// A primary followed by member accesses and indexers.
+fn postfix(found: &Array[Lexer.Token], start: Int) -> Step {
+  var (target, next) = primary(found, start) ?
+  loop {
+    if isSymbol(found, next, ".") && found[next + 1].kind == Lexer.Identifier {
+      target = Syntax.Member(target, found[next + 1].text)
+      next = next + 2
+    } else if isSymbol(found, next, "[") {
+      if (isSymbol(found, next + 1, "?") || isSymbol(found, next + 1, "*")) && isSymbol(found, next + 2, "]") {
+        target = Syntax.Wildcard(target, if found[next + 1].text == "?" { Syntax.AnyOf } else { Syntax.AllOf })
+        next = next + 3
+      } else {
+        let (key, after) = expressionAt(found, next + 1) ?
+        next = expectSymbol(found, after, "]") ?
+        target = Syntax.Index(target, key)
+      }
+    } else {
+      return Ok((target, next))
+    }
+  }
+}
+
+/// A literal, a name, a function call, a parenthesized expression, an array, or an object.
+fn primary(found: &Array[Lexer.Token], start: Int) -> Step {
+  let token = found[start]
+  match token.kind {
+    case Lexer.Number => Ok((Syntax.Constant(Log.Scalar(numberOf(token.text))), start + 1))
+    case Lexer.Text => Ok((Syntax.Constant(Log.Scalar(Log.Text(token.text))), start + 1))
+    case Lexer.BuiltIn => Ok((Syntax.Name(token.text), start + 1))
+    case Lexer.Keyword => keywordValue(&token, start)
+    case Lexer.Identifier => {
+      if !isSymbol(found, start + 1, "(") { return Ok((Syntax.Name(token.text), start + 1)) }
+      let (arguments, next) = argumentsAt(found, start + 2) ?
+      let ignoring = isKeyword(found, next, "ci")
+      Ok((Syntax.Call(token.text.toLower(), arguments, ignoring), if ignoring { next + 1 } else { next }))
+    }
+    case Lexer.Symbol => {
+      if token.text == "(" {
+        let (inner, next) = expressionAt(found, start + 1) ?
+        return Ok((inner, expectSymbol(found, next, ")") ?))
+      }
+      if token.text == "[" { return arrayAt(found, start + 1) }
+      if token.text == "\{" { return objectAt(found, start + 1) }
+      Err(unexpected(&token))
+    }
+    case Lexer.End => Err("the expression ends too soon")
+  }
+}
+
+/// `true`, `false`, or `null`.
+fn keywordValue(token: &Lexer.Token, start: Int) -> Step {
+  match token.text {
+    case "true" => Ok((Syntax.Constant(Log.Scalar(Log.Boolean(true))), start + 1))
+    case "false" => Ok((Syntax.Constant(Log.Scalar(Log.Boolean(false))), start + 1))
+    case "null" => Ok((Syntax.Constant(Log.Scalar(Log.Null)), start + 1))
+    case _ => Err(unexpected(token))
+  }
+}
+
+/// Call arguments up to the closing parenthesis, and the index after it.
+fn argumentsAt(found: &Array[Lexer.Token], start: Int) -> Result[(Array[Syntax.Expression], Int), Str] {
+  var arguments: Array[Syntax.Expression] = []
+  if isSymbol(found, start, ")") { return Ok((arguments, start + 1)) }
+  var next = start
+  loop {
+    let (argument, after) = expressionAt(found, next) ?
+    arguments = arguments.push(argument)
+    if isSymbol(found, after, ")") { return Ok((arguments, after + 1)) }
+    next = expectSymbol(found, after, ",") ?
+  }
+}
+
+/// An array literal after its `[`, with `..` spreading another array.
+fn arrayAt(found: &Array[Lexer.Token], start: Int) -> Step {
+  var elements: Array[Syntax.Element] = []
+  if isSymbol(found, start, "]") { return Ok((Syntax.ArrayOf(elements), start + 1)) }
+  var next = start
+  loop {
+    let spread = isSymbol(found, next, "..")
+    let (item, after) = expressionAt(found, if spread { next + 1 } else { next }) ?
+    elements = elements.push(if spread { Syntax.SpreadItems(item) } else { Syntax.Item(item) })
+    if isSymbol(found, after, "]") { return Ok((Syntax.ArrayOf(elements), after + 1)) }
+    next = expectSymbol(found, after, ",") ?
+  }
+}
+
+/// An object literal after its `{`: `name: value`, `'quoted name': value`, a bare name standing for
+/// the property of that name, and `..` spreading another object.
+fn objectAt(found: &Array[Lexer.Token], start: Int) -> Step {
+  var fields: Array[Syntax.Field] = []
+  if isSymbol(found, start, "\}") { return Ok((Syntax.ObjectOf(fields), start + 1)) }
+  var next = start
+  loop {
+    let token = found[next]
+    var after = next
+    if isSymbol(found, next, "..") {
+      let (members, end) = expressionAt(found, next + 1) ?
+      fields = fields.push(Syntax.SpreadMembers(members))
+      after = end
+    } else if token.kind == Lexer.Identifier || token.kind == Lexer.Text {
+      if isSymbol(found, next + 1, ":") {
+        let (held, end) = expressionAt(found, next + 2) ?
+        fields = fields.push(Syntax.Pair(token.text, held))
+        after = end
+      } else {
+        fields = fields.push(Syntax.Pair(token.text, Syntax.Name(token.text)))
+        after = next + 1
+      }
+    } else {
+      return Err(unexpected(&token))
+    }
+    if isSymbol(found, after, "\}") { return Ok((Syntax.ObjectOf(fields), after + 1)) }
+    next = expectSymbol(found, after, ",") ?
+  }
+}
+
+/// A number literal: an integer, a decimal, or hexadecimal after `0x`.
+fn numberOf(text: Str) -> Log.Scalar {
+  if text.startsWith("0x") {
+    var value = Decimal.zero()
+    for character in text.drop(2).toLower().chars() { value = value * Decimal.fromInt(16) + Decimal.fromInt(HEX.indexOf(character.toText())) }
+    return match Decimal.toInt(value) {
+      case Some(whole) => Log.Integer(whole)
+      case None => Log.Exact(value)
+    }
+  }
+  if text.contains(".") { return Log.Exact(Decimal.parseOr(text, Decimal.zero())) }
+  match text.toInt() {
+    case Some(value) => Log.Integer(value)
+    case None => Log.Exact(Decimal.parseOr(text, Decimal.zero()))
+  }
+}
+
+/// Whether the token at an index is a keyword.
+fn isKeyword(found: &Array[Lexer.Token], index: Int, word: Str) -> Bool {
+  match List.get(found, index) {
+    case Some(token) => token.kind == Lexer.Keyword && token.text == word
+    case None => false
+  }
+}
+
+/// Whether the token at an index is a symbol.
+fn isSymbol(found: &Array[Lexer.Token], index: Int, symbol: Str) -> Bool {
+  match List.get(found, index) {
+    case Some(token) => token.kind == Lexer.Symbol && token.text == symbol
+    case None => false
+  }
+}
+
+/// The index after a required keyword.
+fn expect(found: &Array[Lexer.Token], index: Int, word: Str) -> Result[Int, Str] {
+  if isKeyword(found, index, word) { Ok(index + 1) } else { Err("expected `" + word + "` at " + show(found[index].position)) }
+}
+
+/// The index after a required symbol.
+fn expectSymbol(found: &Array[Lexer.Token], index: Int, symbol: Str) -> Result[Int, Str] {
+  if isSymbol(found, index, symbol) { Ok(index + 1) } else { Err("expected `" + symbol + "` at " + show(found[index].position)) }
+}
+
+/// A description of an unexpected token.
+fn unexpected(token: &Lexer.Token) -> Str {
+  if token.kind == Lexer.End { "the expression ends too soon" } else { "unexpected `" + token.text + "` at " + show(token.position) }
+}

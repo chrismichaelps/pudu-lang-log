@@ -1,0 +1,210 @@
+/** @Log.Expressions.Functions.Library — the functions expressions can call */
+module PuduLangLog.Expressions.Functions
+
+import Std.Decimal as Decimal
+import Std.List as List
+import Std.Math as Math
+import Std.Option as Option
+import Std.Regex as Regex
+import Std.Text as Text
+import PuduLangLog.Domain.Properties as Properties
+import PuduLangLog.Expressions.Values as Values
+import PuduLangLog as Log
+
+/// Function names that accept undefined arguments.
+const TOLERANT: Array[Str] = ["coalesce", "isdefined", "undefined", "now"]
+
+/// Every function name, in lower case.
+const KNOWN: Array[Str] = ["coalesce", "concat", "contains", "elementat", "endswith", "indexof", "indexofmatch", "inspect", "ismatch", "isdefined", "lastindexof", "length", "nest", "now", "replace", "rest", "round", "startswith", "substring", "tagof", "tostring", "typeof", "undefined", "utcdatetime"]
+
+/// Whether a name, in lower case, is a function this library knows.
+export fn isKnown(name: Str) -> Bool { KNOWN.contains(name) }
+
+/// A function applied to evaluated arguments. Any undefined argument makes the answer undefined,
+/// except for `Coalesce` and `IsDefined`; `ci` makes text comparisons ignore case. `Rest` and
+/// `Inspect` of a failure are answered by the evaluator.
+export fn call(name: Str, arguments: &Array[Option[Log.Value]], ignoring: Bool, now: &Log.Timestamp) -> Option[Log.Value] {
+  if !TOLERANT.contains(name) && List.any(arguments, |argument: Option[Log.Value]| argument == None) { return None }
+  let first = Option.flatten(List.first(arguments))
+  let second = Option.flatten(List.get(arguments, 1))
+  match name {
+    case "coalesce" => {
+      for argument in arguments {
+        if argument != None && argument != Some(Log.Scalar(Log.Null)) { return argument }
+      }
+      None
+    }
+    case "isdefined" => Values.boolean(first != None)
+    case "undefined" => None
+    case "now" => Some(Log.Scalar(Log.Moment(*now)))
+    case "concat" => {
+      var pieces: Array[Str] = []
+      for argument in arguments { pieces = pieces.push(Values.textOf(&argument) ?) }
+      Values.text(pieces.join(""))
+    }
+    case "contains" => Values.boolean(cased(&first, ignoring) ?.contains(cased(&second, ignoring) ?))
+    case "startswith" => Values.boolean(cased(&first, ignoring) ?.startsWith(cased(&second, ignoring) ?))
+    case "endswith" => Values.boolean(cased(&first, ignoring) ?.endsWith(cased(&second, ignoring) ?))
+    case "indexof" => Some(Log.Scalar(Log.Integer(cased(&first, ignoring) ?.indexOf(cased(&second, ignoring) ?))))
+    case "lastindexof" => Some(Log.Scalar(Log.Integer(lastIndexOf(cased(&first, ignoring) ?, cased(&second, ignoring) ?))))
+    case "replace" => {
+      let subject = Values.textOf(&first) ?
+      let pattern = Values.textOf(&second) ?
+      let replacement = Values.textOf(&Option.flatten(List.get(arguments, 2))) ?
+      Values.text(if ignoring { replaceIgnoringCase(subject, pattern, replacement) } else { subject.replace(pattern, replacement) })
+    }
+    case "ismatch" => Values.boolean(matchAt(&first, &second, ignoring) ? >= 0)
+    case "indexofmatch" => Some(Log.Scalar(Log.Integer(matchAt(&first, &second, ignoring) ?)))
+    case "length" => lengthOf(&first)
+    case "substring" => substring(&first, &second, &Option.flatten(List.get(arguments, 2)), arguments.length())
+    case "elementat" => elementAt(&first ?, &second ?, ignoring)
+    case "tagof" => match first {
+      case Some(Log.Structure(shape)) => Values.text(shape.tag ?)
+      case _ => None
+    }
+    case "typeof" => Values.text(typeOf(&first))
+    case "tostring" => Values.text(Values.render(&first ?, Values.textOf(&second)))
+    case "round" => {
+      let places = Decimal.toInt(Values.decimalOf(&second) ?) ?
+      Values.number(Decimal.roundHalfEven(Values.decimalOf(&first) ?, places))
+    }
+    case "utcdatetime" => match first {
+      case Some(Log.Scalar(Log.Moment(moment))) => Some(Log.Scalar(Log.Moment(Log.Timestamp{..moment, offset: 0})))
+      case _ => None
+    }
+    case "nest" => match first {
+      case Some(Log.Structure(shape)) => Some(nest(&shape.properties))
+      case _ => None
+    }
+    case "inspect" => first
+    case _ => None
+  }
+}
+
+/// Text in lower case when ignoring case.
+fn cased(held: &Option[Log.Value], ignoring: Bool) -> Option[Str] {
+  let text = Values.textOf(held) ?
+  Some(if ignoring { text.toLower() } else { text })
+}
+
+/// The last position of a needle, or -1.
+fn lastIndexOf(subject: Str, needle: Str) -> Int {
+  let (before, after) = Text.breakOnEnd(subject, needle)
+  if after.length() == subject.length() && !subject.endsWith(needle) { -1 } else { before.length() - needle.length() }
+}
+
+/// Every occurrence of a pattern replaced, ignoring case.
+fn replaceIgnoringCase(subject: Str, pattern: Str, replacement: Str) -> Str {
+  if pattern.isEmpty() { return subject }
+  var pieces: Array[Str] = []
+  var rest = subject
+  loop {
+    let at = rest.toLower().indexOf(pattern.toLower())
+    if at < 0 { return pieces.push(rest).join("") }
+    pieces = pieces.push(rest.take(at)).push(replacement)
+    rest = rest.drop(at + pattern.length())
+  }
+}
+
+/// The position of a regular expression's first match, -1 without one, or undefined when the
+/// pattern does not compile.
+fn matchAt(subject: &Option[Log.Value], pattern: &Option[Log.Value], ignoring: Bool) -> Option[Int] {
+  let text = cased(subject, ignoring) ?
+  let expression = Values.textOf(pattern) ?
+  let compiled = match Regex.compile(if ignoring { lowerPattern(expression) } else { expression }) {
+    case Ok(regex) => regex
+    case Err(_) => { return None }
+  }
+  match Regex.find(&compiled, text) {
+    case Some(found) => Some(found.start)
+    case None => Some(-1)
+  }
+}
+
+/// A pattern with its literal letters lowered and its escapes kept.
+fn lowerPattern(pattern: Str) -> Str {
+  var pieces: Array[Str] = []
+  var escaped = false
+  for character in pattern.chars() {
+    pieces = pieces.push(if escaped { character.toText() } else { character.toText().toLower() })
+    escaped = !escaped && character == '\\'
+  }
+  pieces.join("")
+}
+
+/// The length of text or of a sequence.
+fn lengthOf(held: &Option[Log.Value]) -> Option[Log.Value] {
+  match held {
+    case Some(Log.Scalar(Log.Text(text))) => Some(Log.Scalar(Log.Integer(text.length())))
+    case Some(Log.Sequence(items)) => Some(Log.Scalar(Log.Integer(items.length())))
+    case _ => None
+  }
+}
+
+/// Text from a start to the end, or of a length when one is given.
+fn substring(subject: &Option[Log.Value], start: &Option[Log.Value], length: &Option[Log.Value], count: Int) -> Option[Log.Value] {
+  let text = Values.textOf(subject) ?
+  let from = Decimal.toInt(Values.decimalOf(start) ?) ?
+  if from < 0 || from > text.length() { return None }
+  if count < 3 { return Values.text(text.drop(from)) }
+  let size = Decimal.toInt(Values.decimalOf(length) ?) ?
+  if size < 0 { return None }
+  Values.text(text.slice(from, Math.min(text.length(), from + size)))
+}
+
+/// An element of a sequence by position, or a member of a structure or dictionary by name.
+export fn elementAt(target: &Log.Value, key: &Log.Value, ignoring: Bool) -> Option[Log.Value] {
+  match (*target, *key) {
+    case (Log.Sequence(items), _) => {
+      let position = Decimal.toInt(Values.decimalOf(&Some(*key)) ?) ?
+      List.get(&items, position)
+    }
+    case (Log.Structure(shape), Log.Scalar(Log.Text(name))) => {
+      let found = List.find(&shape.properties, |member: Log.Property| if ignoring { member.name.toLower() == name.toLower() } else { member.name == name }) ?
+      Some(found.value)
+    }
+    case (Log.Dictionary(entries), _) => {
+      let found = List.find(&entries, |entry: Log.Entry| Values.equal(&Log.Scalar(entry.key), key, ignoring)) ?
+      Some(found.value)
+    }
+    case _ => None
+  }
+}
+
+/// The kind of a value as text.
+fn typeOf(held: &Option[Log.Value]) -> Str {
+  match held {
+    case None => "undefined"
+    case Some(Log.Scalar(Log.Null)) => "null"
+    case Some(Log.Scalar(Log.Boolean(_))) => "Bool"
+    case Some(Log.Scalar(Log.Integer(_))) => "Int"
+    case Some(Log.Scalar(Log.Real(_))) => "Float64"
+    case Some(Log.Scalar(Log.Exact(_))) => "Decimal"
+    case Some(Log.Scalar(Log.Text(_))) => "Str"
+    case Some(Log.Scalar(Log.Moment(_))) => "Timestamp"
+    case Some(Log.Scalar(Log.Span(_))) => "Duration"
+    case Some(Log.Scalar(Log.Binary(_))) => "Bytes"
+    case Some(Log.Sequence(_)) => "array"
+    case Some(Log.Structure(_)) => "object"
+    case Some(Log.Dictionary(_)) => "dictionary"
+  }
+}
+
+/// Properties with dotted names turned into nested structures: `a.b` becomes `b` inside `a`.
+fn nest(properties: &Array[Log.Property]) -> Log.Value {
+  var nested: Array[Log.Property] = []
+  for property in properties {
+    let (head, tail) = Text.breakOn(property.name, ".")
+    if tail.isEmpty() {
+      nested = Properties.put(&nested, head, property.value)
+    } else {
+      let inner = match Properties.find(&nested, head) {
+        case Some(Log.Structure(shape)) => shape.properties
+        case _ => []
+      }
+      let merged = nest(&inner.push(Log.Property{name: tail.drop(1), value: property.value}))
+      nested = Properties.put(&nested, head, merged)
+    }
+  }
+  Log.Structure(Log.Structure{tag: None, properties: nested})
+}

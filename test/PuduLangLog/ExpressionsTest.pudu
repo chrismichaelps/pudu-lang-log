@@ -1,0 +1,100 @@
+/** @Test.Expressions.Suite — filter expressions and their evaluation */
+module PuduLangLog.ExpressionsTest
+
+import Std.Io as Io
+import Std.Test as Test
+import PuduLangLog.Event as Event
+import PuduLangLog.Expressions as Expressions
+import PuduLangLog.Failure as Failure
+import PuduLangLog as Log
+import PuduLangLog.Value as Value
+
+/// The event every expression in this suite reads.
+fn sample() -> Log.Event {
+  let base = Event.create(Log.Timestamp{millis: 1790604309123, offset: 120}, Log.Warning, "User \{User\} bought \{Count\} items for \{Total:0.00\}", [
+      Value.property("User", Value.text("Ada")),
+      Value.property("Count", Value.int(3)),
+      Value.property("Total", Value.decimal(12.5d)),
+      Value.property("Tags", Value.list([Value.text("new"), Value.text("vip")])),
+      Value.property("Cart", Value.object([("Items", Value.list([Value.object([("Price", Value.int(5))]), Value.object([("Price", Value.int(20))])]))])),
+      Value.property("Meta", Value.dictionary([("region", Value.text("eu"))])),
+      Value.property("SourceContext", Value.text("App.Web.Api")),
+      Value.property("Http.Method", Value.text("GET")),
+      Value.property("Nothing", Value.nothing()),
+      Value.property("Ratio", Value.float(0.5)),
+      Value.property("Order", Value.structure("Order", [("Id", Value.int(7))]))
+    ])
+  Event.withTrace(&Event.withFailure(&base, Failure.of("IoError", "disk full")), "t1", "s1")
+}
+
+/// The value of an expression for the sample event, or `?` text when it does not compile.
+fn value(text: Str) -> Option[Log.Value] {
+  match Expressions.compile(text) {
+    case Ok(compiled) => Expressions.evaluate(&compiled, &sample())
+    case Err(problem) => Some(Value.text("? " + problem))
+  }
+}
+
+/// Whether an expression is true for the sample event.
+fn holds(text: Str) -> Bool { value(text) == Some(Value.bool(true)) }
+
+/// The error an expression fails to compile with.
+fn problem(text: Str) -> Str {
+  match Expressions.compile(text) {
+    case Ok(_) => "compiled"
+    case Err(reason) => reason
+  }
+}
+
+/// Runs the suite.
+fn main() -> Int {
+  let checks = Test.suite("Expressions", &[
+      Test.equals("literals", &[value("42"), value("-1.5"), value("0xFF"), value("'it''s'"), value("true"), value("null")], &[Some(Value.int(42)), Some(Value.decimal(-1.5d)), Some(Value.int(255)), Some(Value.text("it's")), Some(Value.bool(true)), Some(Value.nothing())]),
+      Test.equals("properties and members", &[value("User"), value("Cart.Items[1].Price"), value("Meta['region']"), value("@p['Http.Method']"), value("Order.Id")], &[Some(Value.text("Ada")), Some(Value.int(20)), Some(Value.text("eu")), Some(Value.text("GET")), Some(Value.int(7))]),
+      Test.equals("missing properties are undefined", &(value("Missing"), value("User.Name"), value("Tags[9]")), &(None, None, None)),
+      Test.equals("built-in properties", &[value("@l"), value("@mt"), value("@m"), value("@x"), value("@tr"), value("@sp"), value("@r")], &[Some(Value.text("Warning")), Some(Value.text("User \{User\} bought \{Count\} items for \{Total:0.00\}")), Some(Value.text("User Ada bought 3 items for 12.50")), Some(Value.text("IoError: disk full")), Some(Value.text("t1")), Some(Value.text("s1")), Some(Value.list([Value.text("12.50")]))]),
+      Test.equals("the timestamp and identifier", &(value("@t"), value("@i")), &(Some(Value.moment(Log.Timestamp{millis: 1790604309123, offset: 120})), Some(Value.int(3342254646)))),
+      Test.that("equality", holds("User = 'Ada'") && holds("Count = 3") && holds("Count = 3.0") && holds("Ratio = 0.5") && !holds("User = 'ada'") && holds("User = 'ada' ci") && holds("User <> 'Bob'")),
+      Test.equals("equality with an undefined side is undefined", &(value("Missing = 1"), value("Missing <> 1")), &(None, None)),
+      Test.that("ordering of numbers", holds("Count > 2") && holds("Count >= 3") && holds("Count < 4") && holds("Count <= 3") && !holds("Count < 3") && !holds("Count > 3")),
+      Test.equals("ordering of text is undefined", &value("User > 'A'"), &None),
+      Test.that("like", holds("SourceContext like 'App.%'") && holds("User like 'A_a'") && !holds("User like 'a%'") && holds("User like 'a%' ci") && holds("SourceContext not like 'Other%'")),
+      Test.that("like escapes", holds("'50%' like '50%%'") && !holds("'500' like '50%%'") && holds("'a_b' like 'a__b'")),
+      Test.that("membership", holds("User in ['Ada', 'Bob']") && holds("'vip' in Tags") && !holds("'x' in Tags") && holds("'VIP' in Tags ci") && holds("'x' not in Tags")),
+      Test.that("null tests", holds("Nothing is null") && holds("Missing is null") && holds("User is not null") && !holds("Nothing is not null")),
+      Test.that("logic", holds("Count = 3 and User = 'Ada'") && holds("Count = 1 or User = 'Ada'") && holds("not (Count = 1)") && !holds("Missing = 1 or false") && !holds("not Missing")),
+      Test.equals("arithmetic", &[value("Count + 2"), value("Count * Total"), value("Count - 5"), value("7 % 3"), value("1 / 4"), value("2 ^ 10"), value("-Count")], &[Some(Value.decimal(5d)), Some(Value.decimal(37.5d)), Some(Value.decimal(-2d)), Some(Value.decimal(1d)), Some(Value.decimal(0.25d)), Some(Value.float(1024.0)), Some(Value.decimal(-3d))]),
+      Test.equals("division by zero is undefined", &(value("1 / 0"), value("1 % 0"), value("'a' + 1")), &(None, None, None)),
+      Test.equals("precedence", &[value("1 + 2 * 3"), value("(1 + 2) * 3"), value("2 ^ 3 ^ 2"), value("-2 ^ 2")], &[Some(Value.decimal(7d)), Some(Value.decimal(9d)), Some(Value.float(512.0)), Some(Value.float(4.0))]),
+      Test.equals("conditionals", &(value("if Count > 2 then 'many' else 'few'"), value("if Missing then 1 else 2")), &(Some(Value.text("many")), Some(Value.decimal(2d)))),
+      Test.equals("array literals and spreads", &value("[1, ..Tags, Missing]"), &Some(Value.list([Value.int(1), Value.text("new"), Value.text("vip")]))),
+      Test.equals("object literals, bare names, spreads, and undefined members", &value("\{a: 1, 'b c': 2, User, ..Order, Id: Undefined()\}"), &Some(Value.object([("a", Value.int(1)), ("b c", Value.int(2)), ("User", Value.text("Ada"))]))),
+      Test.that("wildcards", holds("Tags[?] = 'vip'") && !holds("Tags[*] = 'vip'") && holds("Tags[*] like '%e%' or Tags[*] like '%i%'") && holds("Cart.Items[?].Price > 10") && !holds("Cart.Items[*].Price > 10") && holds("StartsWith(Tags[?], 'n')")),
+      Test.that("wildcards over nothing", !holds("Missing[?] = 1") && holds("[][*] = 1")),
+      Test.equals("text functions", &[value("StartsWith(User, 'A')"), value("EndsWith(User, 'A') ci"), value("Contains(SourceContext, 'Web')"), value("IndexOf(User, 'a')"), value("LastIndexOf(SourceContext, '.')"), value("LastIndexOf(User, 'z')"), value("Length(User)"), value("Length(Tags)")], &[Some(Value.bool(true)), Some(Value.bool(true)), Some(Value.bool(true)), Some(Value.int(2)), Some(Value.int(7)), Some(Value.int(-1)), Some(Value.int(3)), Some(Value.int(2))]),
+      Test.equals("more text functions", &[value("Substring(SourceContext, 4)"), value("Substring(SourceContext, 4, 3)"), value("Replace(SourceContext, '.', '/')"), value("Replace(User, 'A', 'e') ci"), value("Concat(User, '-', 'x')"), value("Substring(SourceContext, LastIndexOf(SourceContext, '.') + 1)")], &[Some(Value.text("Web.Api")), Some(Value.text("Web")), Some(Value.text("App/Web/Api")), Some(Value.text("edo")), Some(Value.text("Ada-x")), Some(Value.text("Api"))]),
+      Test.equals("regular expressions", &[value("IsMatch(User, '^A.a$')"), value("IndexOfMatch(SourceContext, 'W[a-z]+')"), value("IsMatch(User, '^ADA$') ci"), value("IsMatch(User, '(')")], &[Some(Value.bool(true)), Some(Value.int(4)), Some(Value.bool(true)), None]),
+      Test.equals("definition and coalescing", &[value("IsDefined(Missing)"), value("IsDefined(Nothing)"), value("Coalesce(Missing, Nothing, User)"), value("Coalesce(Missing)")], &[Some(Value.bool(false)), Some(Value.bool(true)), Some(Value.text("Ada")), None]),
+      Test.equals("type functions", &[value("TypeOf(User)"), value("TypeOf(Count)"), value("TypeOf(Tags)"), value("TypeOf(Order)"), value("TypeOf(Meta)"), value("TypeOf(Missing)"), value("TypeOf(Nothing)"), value("TagOf(Order)")], &[Some(Value.text("Str")), Some(Value.text("Int")), Some(Value.text("array")), Some(Value.text("object")), Some(Value.text("dictionary")), Some(Value.text("undefined")), Some(Value.text("null")), Some(Value.text("Order"))]),
+      Test.equals("conversions", &[value("ToString(Total, '0.0')"), value("ToString(User)"), value("Round(2.345, 2)"), value("Round(2.5, 0)"), value("ElementAt(Tags, 1)"), value("ElementAt(@p, 'user') ci")], &[Some(Value.text("12.5")), Some(Value.text("Ada")), Some(Value.decimal(2.34d)), Some(Value.decimal(2d)), Some(Value.text("vip")), Some(Value.text("Ada"))]),
+      Test.equals("moments", &(value("UtcDateTime(@t)"), value("TypeOf(Now())")), &(Some(Value.moment(Log.Timestamp{millis: 1790604309123, offset: 0})), Some(Value.text("Timestamp")))),
+      Test.equals("nesting dotted names", &value("Nest(\{'a.b': 1, 'a.c': 2, d: 3\})"), &Some(Value.object([("a", Value.object([("b", Value.int(1)), ("c", Value.int(2))])), ("d", Value.int(3))]))),
+      Test.equals("inspecting the failure", &value("Inspect(@x).Message"), &Some(Value.text("disk full"))),
+      Test.equals("undefined arguments make calls undefined", &(value("StartsWith(Missing, 'a')"), value("Length(Count)")), &(None, None)),
+      Test.equals("function names ignore case", &value("startswith(User, 'A')"), &Some(Value.bool(true))),
+      Test.equals("syntax errors", &[problem("User ="), problem("'open"), problem("User # 1"), problem("Frob(User)"), problem("(User"), problem("User User")], &["the expression ends too soon", "unterminated text starting at 0", "unexpected `#` at 5", "unknown function `frob`", "expected `)` at 5", "unexpected `User` at 5"]),
+      Test.that("a predicate from text", match Expressions.predicate("@l = 'Warning' and Count >= 3") {
+          case Ok(test) => test(&sample()) && !test(&Log.Event{..sample(), level: Log.Information})
+          case Err(_) => false
+        }),
+      Test.that("a predicate refuses bad text", match Expressions.predicate("Count >") {
+          case Ok(_) => false
+          case Err(_) => true
+        })
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

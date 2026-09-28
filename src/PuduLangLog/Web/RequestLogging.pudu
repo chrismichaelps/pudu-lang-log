@@ -1,0 +1,106 @@
+/** @Log.Web.RequestLogging.Middleware — one completion event per HTTP request */
+module PuduLangLog.Web.RequestLogging
+
+import Std.Decimal as Decimal
+import Std.Http.Server.Route as Route
+import Std.Http as Web
+import Std.Option as Option
+import Std.Time as Time
+import PuduLangLog.Domain.Parser as Parser
+import PuduLangLog as Log
+import PuduLangLog.Logger as Logger
+import PuduLangLog.Web.Diagnostic as Diagnostic
+
+/** @Log.Web.RequestLogging.Options — message, level, and properties of the event */
+export type Options = {
+  messageTemplate: Str,
+  level: fn(&Route.Request, Int, Float64, Bool) -> Log.Level,
+  enrich: fn(&Diagnostic.Collector, &Route.Request, &Web.Response) -> (),
+  includeQueryInRequestPath: Bool,
+  properties: fn(&Route.Request, Str, Float64, Int) -> Array[Log.Property]
+}
+
+/// The source context of completion events.
+export const SOURCE: Str = "PuduLangLog.Web.RequestLogging"
+
+/// The completion message of the defaults.
+export const MESSAGE: Str = "HTTP \{RequestMethod\} \{RequestPath\} responded \{StatusCode\} in \{Elapsed:0.0000\} ms"
+
+/// The default message, `Error` for a failure or a status of 500 and above and `Information`
+/// otherwise, no extra enrichment, and the path without its query.
+export fn defaults() -> Options {
+  Options {
+    messageTemplate: MESSAGE,
+    level: fn(_request: &Route.Request, status: Int, _elapsed: Float64, failed: Bool) -> Log.Level { levelFor(status, failed) },
+    enrich: fn(_collector: &Diagnostic.Collector, _request: &Route.Request, _response: &Web.Response) -> () {},
+    includeQueryInRequestPath: false,
+    properties: standardProperties
+  }
+}
+
+/// `Error` for a failure or a status of 500 and above, `Information` otherwise.
+export fn levelFor(status: Int, failed: Bool) -> Log.Level { if failed || status > 499 { Log.Error } else { Log.Information } }
+
+/// `RequestMethod`, `RequestPath`, `StatusCode`, and `Elapsed` in milliseconds.
+export fn standardProperties(request: &Route.Request, path: Str, elapsed: Float64, status: Int) -> Array[Log.Property] {
+  [
+    Log.Property{name: "RequestMethod", value: Log.Scalar(Log.Text(Web.methodName(&request.message.method)))},
+    Log.Property{name: "RequestPath", value: Log.Scalar(Log.Text(path))},
+    Log.Property{name: "StatusCode", value: Log.Scalar(Log.Integer(status))},
+    Log.Property{name: "Elapsed", value: Log.Scalar(Log.Real(elapsed))}
+  ]
+}
+
+/// A middleware writing one event when each request completes.
+export fn middleware(logger: &Logger.Logger, options: Options) -> Route.Middleware {
+  let shared = *logger
+  fn(request: Route.Request, next: Route.Handler) -> Web.Response {
+    respond(&shared, &options, &request, fn(_collector: &Diagnostic.Collector) -> Web.Response { next(request) })
+  }
+}
+
+/// A handler given a collector for properties and a failure to add to its request's completion event.
+export fn handler(logger: &Logger.Logger, options: Options, inner: fn(Route.Request, &Diagnostic.Collector) -> Web.Response) -> Route.Handler {
+  let shared = *logger
+  fn(request: Route.Request) -> Web.Response {
+    respond(&shared, &options, &request, fn(collector: &Diagnostic.Collector) -> Web.Response { inner(request, collector) })
+  }
+}
+
+/// Runs the request, then writes its completion event when the level is enabled.
+fn respond(logger: &Logger.Logger, options: &Options, request: &Route.Request, run: fn(&Diagnostic.Collector) -> Web.Response) -> Web.Response {
+  let started = Time.elapsed()
+  let collector = Diagnostic.create()
+  let response = run(&collector)
+  let elapsed = Decimal.toFloat64(Decimal.fromInt(Time.elapsed() - started))
+  let failure = Diagnostic.failure(&collector)
+  let source = traced(&logger.forSource(SOURCE), request)
+  let level = (options.level)(request, response.status.code, elapsed, failure != None)
+  if !source.isEnabled(level) { return response }
+  (options.enrich)(&collector, request, &response)
+  var properties: Array[Log.Property] = []
+  for entry in Diagnostic.entries(&collector) {
+    if let Some(bound) = source.bindProperty(entry.name, entry.value, entry.destructure) { properties = properties.push(bound) }
+  }
+  let path = if options.includeQueryInRequestPath { request.message.target } else { request.path }
+  let event = Log.Event {
+    timestamp: (Logger.pipelineOf(&source).clock)(),
+    level: level,
+    template: Parser.parse(options.messageTemplate),
+    properties: properties.concat((options.properties)(request, path, elapsed, response.status.code)),
+    failure: failure,
+    traceId: Option.map(source.trace, |pair: (Str, Str)| pair[0]),
+    spanId: Option.map(source.trace, |pair: (Str, Str)| pair[1])
+  }
+  let _written = source.emit(event)
+  response
+}
+
+/// The logger carrying the trace and parent span of a `traceparent` header, when the request has a
+/// well-formed one.
+fn traced(logger: &Logger.Logger, request: &Route.Request) -> Logger.Logger {
+  let header = Option.unwrapOr(Route.header(request, "traceparent"), "")
+  let parts = header.trim().split("-")
+  if parts.length() != 4 || parts[1].length() != 32 || parts[2].length() != 16 { return *logger }
+  logger.withTrace(parts[1], parts[2])
+}
