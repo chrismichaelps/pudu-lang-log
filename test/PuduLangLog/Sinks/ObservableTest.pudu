@@ -1,0 +1,67 @@
+/** @Test.Sinks.Observable.Suite — observers subscribing to the event stream */
+module PuduLangLog.Sinks.ObservableTest
+
+import Std.Io as Io
+import Std.Sync as Sync
+import Std.Test as Test
+import PuduLangLog.Configuration as Configuration
+import PuduLangLog as Log
+import PuduLangLog.Logger as Logger
+import PuduLangLog.Sinks.Observable as Observable
+import PuduLangLog.Value as Value
+
+/// An observer recording `name:message` and `name:done` into a shared journal.
+fn recording(journal: &Sync.Cell[Array[Str]], name: Str) -> Observable.Observer {
+  let shared = *journal
+  Observable.Observer {
+    next: fn(event: &Log.Event) -> () { note(&shared, name + ":" + event.template.text) },
+    completed: fn() -> () { note(&shared, name + ":done") }
+  }
+}
+
+/// Appends a line to the journal.
+fn note(journal: &Sync.Cell[Array[Str]], line: Str) -> () {
+  let _stored = Sync.set(journal, linesOf(journal).push(line))
+}
+
+/// The journal's lines.
+fn linesOf(journal: &Sync.Cell[Array[Str]]) -> Array[Str] {
+  match Sync.get(journal) {
+    case Ok(lines) => lines
+    case Err(_) => []
+  }
+}
+
+/// Runs the suite.
+fn main() -> Int {
+  let none: Array[Str] = []
+  let journal = Sync.cell(none)
+  let subject = Observable.create()
+  let logger = Configuration.create().writeTo(Observable.sink(&subject)).createLogger()
+  logger.information("before", [])
+  let first = Observable.subscribe(&subject, recording(&journal, "a"))
+  let _second = Observable.subscribe(&subject, recording(&journal, "b"))
+  let counted = Observable.count(&subject)
+  logger.information("both \{N\}", [Value.int(1)])
+  Observable.unsubscribe(&subject, first)
+  Observable.unsubscribe(&subject, first)
+  logger.information("only b", [])
+  let seen = Sync.cell(0)
+  let plain = Observable.subscribe(&subject, Observable.observer(fn(_event: &Log.Event) -> () { let _counted = Sync.set(&seen, 1) }))
+  logger.information("plain", [])
+  Observable.unsubscribe(&subject, plain)
+  Logger.close(&logger)
+  let _late = Observable.subscribe(&subject, recording(&journal, "late"))
+  logger.information("after close", [])
+  let checks = Test.suite("Sinks.Observable", &[
+      Test.equals("subscribers are counted", &counted, &2),
+      Test.equals("events reach current observers in subscription order", &linesOf(&journal), &["a:both \{N\}", "b:both \{N\}", "b:only b", "b:plain", "b:done", "late:done"]),
+      Test.equals("closing removes every observer", &Observable.count(&subject), &0),
+      Test.equals("an observer built from a function ignores the end", &Sync.get(&seen), &Ok(1))
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

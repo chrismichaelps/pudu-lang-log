@@ -1,0 +1,42 @@
+/** @Log.Clock.Seam — where event timestamps come from */
+module PuduLangLog.Clock
+
+import Std.Sync as Sync
+import Std.Time as Time
+import PuduLangLog as Log
+
+/** @Log.Clock.Source — a function answering the current moment */
+export type Clock = fn() -> Log.Timestamp
+
+/// The system clock with the machine's current offset.
+export fn system() -> Clock {
+  fn() -> Log.Timestamp { Log.Timestamp{millis: Time.toMillis(&Time.currentInstant()), offset: Time.localOffsetMinutes()} }
+}
+
+/// The system clock at offset zero.
+export fn utc() -> Clock {
+  fn() -> Log.Timestamp { Log.Timestamp{millis: Time.toMillis(&Time.currentInstant()), offset: 0} }
+}
+
+/// A clock that always answers the same moment.
+export fn fixed(moment: Log.Timestamp) -> Clock { fn() -> Log.Timestamp { moment } }
+
+/// A clock that starts at a moment and advances by `step` milliseconds on every reading.
+export fn stepping(start: Log.Timestamp, step: Int) -> Clock {
+  let next = Sync.cell(start.millis)
+  let lock = Sync.mutex()
+  fn() -> Log.Timestamp {
+    let taken = Sync.withLock(&lock, fn() -> Int {
+        let current = match Sync.get(&next) {
+          case Ok(value) => value
+          case Err(_) => start.millis
+        }
+        let _stored = Sync.set(&next, current + step)
+        current
+      })
+    match taken {
+      case Ok(millis) => Log.Timestamp{millis: millis, offset: start.offset}
+      case Err(_) => start
+    }
+  }
+}

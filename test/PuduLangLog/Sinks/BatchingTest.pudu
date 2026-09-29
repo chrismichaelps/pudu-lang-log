@@ -1,0 +1,123 @@
+/** @Test.Sinks.Batching.Suite — batches, timing, retries, and limits */
+module PuduLangLog.Sinks.BatchingTest
+
+import Std.Concurrent as Concurrent
+import Std.Io as Io
+import Std.Sync as Sync
+import Std.Test as Test
+import PuduLangLog.Event as Event
+import PuduLangLog as Log
+import PuduLangLog.Sink as Sink
+import PuduLangLog.Sinks.Batching as Batching
+
+/// An event carrying a message.
+fn event(message: Str) -> Log.Event { Event.create(Log.Timestamp{millis: 0, offset: 0}, Log.Information, message, []) }
+
+/// A target recording the size of each batch, failing while `failing` holds true.
+fn recording(sizes: &Sync.Cell[Array[Int]], failing: &Sync.Cell[Bool], empties: &Sync.Counter) -> Batching.Target {
+  let seen = *sizes
+  let down = *failing
+  let empty = *empties
+  Batching.Target {
+    emitBatch: fn(batch: &Array[Log.Event]) -> Result[(), Str] {
+      if Sync.get(&down) == Ok(true) { return Err("offline") }
+      if let Ok(held) = Sync.get(&seen) { let _stored = Sync.set(&seen, held.push(batch.length())) }
+      Ok(())
+    },
+    onEmptyBatch: fn() -> () { let _counted = Sync.increment(&empty, 1) }
+  }
+}
+
+/// The recorded batch sizes.
+fn sizesOf(sizes: &Sync.Cell[Array[Int]]) -> Array[Int] {
+  match Sync.get(sizes) {
+    case Ok(held) => held
+    case Err(_) => []
+  }
+}
+
+/// Waits up to a second for a condition.
+fn waitFor(condition: fn() -> Bool) -> Bool {
+  var waited = 0
+  while !condition() && waited < 1000 {
+    let _slept = Concurrent.sleep(5)
+    waited = waited + 5
+  }
+  condition()
+}
+
+/// Runs the suite.
+fn main() -> Int {
+  let none: Array[Int] = []
+  let sizes = Sync.cell(none)
+  let failing = Sync.cell(false)
+  let empties = Sync.counter(0)
+  let slow = Batching.Options{..Batching.defaults(), bufferingTimeLimit: 60000, eagerlyEmitFirstEvent: false, batchSizeLimit: 3}
+  let sink = Batching.sink(recording(&sizes, &failing, &empties), slow)
+  for number in [1, 2, 3, 4, 5, 6, 7] { let _queued = (sink.emit)(&event(show(number))) }
+  let fullBatches = waitFor(fn() -> Bool { sizesOf(&sizes).length() >= 2 })
+  (sink.flush)()
+  let afterFlush = sizesOf(&sizes)
+  (sink.close)()
+
+  let eagerSizes = Sync.cell(none)
+  let eagerSink = Batching.sink(recording(&eagerSizes, &failing, &empties), Batching.Options{..Batching.defaults(), bufferingTimeLimit: 60000})
+  let _first = (eagerSink.emit)(&event("first"))
+  let eagerly = waitFor(fn() -> Bool { sizesOf(&eagerSizes) == [1] })
+  (eagerSink.close)()
+
+  let timedSizes = Sync.cell(none)
+  let timedSink = Batching.sink(recording(&timedSizes, &failing, &empties), Batching.Options{..Batching.defaults(), bufferingTimeLimit: 30, eagerlyEmitFirstEvent: false})
+  let _one = (timedSink.emit)(&event("a"))
+  let _two = (timedSink.emit)(&event("b"))
+  let timely = waitFor(fn() -> Bool { sizesOf(&timedSizes) == [2] })
+  let emptyTicks = waitFor(fn() -> Bool { Sync.count(&empties) != Ok(0) })
+  (timedSink.close)()
+
+  let retrySizes = Sync.cell(none)
+  let down = Sync.cell(true)
+  let lostEvents = Sync.counter(0)
+  let retrySink = Batching.sink(recording(&retrySizes, &down, &empties), Batching.Options{..slow, retryTimeLimit: 600000})
+  (retrySink.attach)(fn(report: &Sink.Report) -> () { let _counted = Sync.increment(&lostEvents, report.events.length()) })
+  let _queued = (retrySink.emit)(&event("kept"))
+  (retrySink.flush)()
+  let whileDown = sizesOf(&retrySizes)
+  let _recovered = Sync.set(&down, false)
+  (retrySink.flush)()
+  let afterRecovery = sizesOf(&retrySizes)
+  (retrySink.close)()
+
+  let droppingSizes = Sync.cell(none)
+  let alwaysDown = Sync.cell(true)
+  let dropped = Sync.counter(0)
+  let droppingSink = Batching.sink(recording(&droppingSizes, &alwaysDown, &empties), Batching.Options{..slow, retryTimeLimit: 0})
+  (droppingSink.attach)(fn(report: &Sink.Report) -> () { let _counted = Sync.increment(&dropped, report.events.length()) })
+  let _lost = (droppingSink.emit)(&event("lost"))
+  (droppingSink.flush)()
+  (droppingSink.close)()
+
+  let limitedSizes = Sync.cell(none)
+  let limitedSink = Batching.sink(recording(&limitedSizes, &failing, &empties), Batching.Options{..slow, queueLimit: Some(2), batchSizeLimit: 10})
+  for number in [1, 2, 3, 4] { let _queued = (limitedSink.emit)(&event(show(number))) }
+  (limitedSink.close)()
+  let refused = (limitedSink.emit)(&event("late"))
+
+  let checks = Test.suite("Sinks.Batching", &[
+      Test.that("full batches go without waiting", fullBatches),
+      Test.equals("a flush writes the rest", &afterFlush, &[3, 3, 1]),
+      Test.that("the first event goes at once when eager", eagerly),
+      Test.that("a batch goes when the buffering time passes", timely),
+      Test.that("an empty queue is reported to the target", emptyTicks),
+      Test.equals("a failed batch is kept", &whileDown, &[]),
+      Test.equals("a kept batch is written after recovery", &afterRecovery, &[1]),
+      Test.equals("nothing is lost within the retry time", &Sync.count(&lostEvents), &Ok(0)),
+      Test.equals("a batch past its retry time is reported lost", &Sync.count(&dropped), &Ok(1)),
+      Test.equals("the queue limit drops the excess", &sizesOf(&limitedSizes), &[2]),
+      Test.equals("a closed sink refuses events", &refused, &Err("the batching sink is closed"))
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

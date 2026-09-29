@@ -1,0 +1,123 @@
+/** @Log.Pipeline.Core — the stages every event of one logger passes */
+module PuduLangLog.Pipeline
+
+import Std.List as List
+import Std.Map as Map
+import Std.Sync as Sync
+import PuduLangLog.Clock as Clock
+import PuduLangLog.Domain.Capture as Capture
+import PuduLangLog.Domain.Levels as Levels
+import PuduLangLog.Domain.Parser as Parser
+import PuduLangLog.Domain.Sources as Sources
+import PuduLangLog.Enricher as Enricher
+import PuduLangLog.Filter as Filter
+import PuduLangLog.LevelSwitch as LevelSwitch
+import PuduLangLog as Log
+import PuduLangLog.SelfLog as SelfLog
+import PuduLangLog.Sink as Sink
+
+/** @Log.Pipeline.Stages — levels, enrichment, filters, and sinks */
+export type Pipeline = {
+  minimum: Log.Level,
+  control: Option[LevelSwitch.LevelSwitch],
+  overrides: Array[Override],
+  enrichers: Array[Enricher.Enricher],
+  filters: Array[Filter.Filter],
+  sink: Sink.Sink,
+  audit: Option[Sink.Sink],
+  policy: Capture.Policy,
+  selfLog: SelfLog.SelfLog,
+  clock: Clock.Clock,
+  templates: Templates,
+  silent: Bool
+}
+
+/** @Log.Pipeline.Override — a level switch for one source prefix */
+export type Override = { source: Str, control: LevelSwitch.LevelSwitch }
+
+/** @Log.Pipeline.Templates — parsed templates kept for reuse */
+export type Templates = { entries: Sync.Cell[Map[Str, Log.Template]], lock: Sync.Mutex }
+
+/// The most templates kept parsed.
+const MOST_TEMPLATES: Int = 1000
+
+/// The longest template kept parsed.
+const LONGEST_TEMPLATE: Int = 1024
+
+/// An empty template store.
+export fn templates() -> Templates {
+  let none: Map[Str, Log.Template] = Map.empty()
+  Templates{entries: Sync.cell(none), lock: Sync.mutex()}
+}
+
+/// A pipeline that accepts no events.
+export fn silent() -> Pipeline {
+  Pipeline {
+    minimum: Log.Fatal,
+    control: None,
+    overrides: [],
+    enrichers: [],
+    filters: [],
+    sink: Sink.none(),
+    audit: None,
+    policy: Capture.defaults(),
+    selfLog: SelfLog.create(),
+    clock: Clock.system(),
+    templates: templates(),
+    silent: true
+  }
+}
+
+/// The parsed template, from the store when it was parsed before. Up to a thousand templates of
+/// at most 1024 characters are kept; others are parsed on every use.
+export fn templateOf(pipeline: &Pipeline, text: Str) -> Log.Template {
+  if let Ok(entries) = Sync.get(&pipeline.templates.entries) {
+    if let Some(found) = Map.get(&entries, text) { return found }
+  }
+  let parsed = Parser.parse(text)
+  if text.length() <= LONGEST_TEMPLATE {
+    let _kept = Sync.withLock(&pipeline.templates.lock, fn() -> () {
+        if let Ok(entries) = Sync.get(&pipeline.templates.entries) {
+          if Map.size(&entries) < MOST_TEMPLATES { let _stored = Sync.set(&pipeline.templates.entries, Map.insert(&entries, text, parsed)) }
+        }
+      })
+  }
+  parsed
+}
+
+/// Whether an event at a level from a source passes the pipeline's minimum: the override of the
+/// most specific prefix covering the source decides when there is one.
+export fn enabled(pipeline: &Pipeline, source: &Option[Str], level: Log.Level) -> Bool {
+  if pipeline.silent { return false }
+  if let Some(context) = source {
+    if let Some(found) = List.find(&pipeline.overrides, |candidate: Override| Sources.covers(candidate.source, context)) {
+      return LevelSwitch.allows(&found.control, level)
+    }
+  }
+  if !Levels.passes(level, pipeline.minimum) { return false }
+  match pipeline.control {
+    case Some(control) => LevelSwitch.allows(&control, level)
+    case None => true
+  }
+}
+
+/// The event enriched by the logger's own enrichers (most recent first) and the pipeline's, then
+/// filtered, then emitted. The answer is an audit sink's failure, if any.
+export fn process(pipeline: &Pipeline, event: Log.Event, context: &Array[Enricher.Enricher]) -> Result[(), Str] {
+  var current = event
+  for enricher in context.reverse() { current = enricher(current, &pipeline.policy) }
+  for enricher in pipeline.enrichers { current = enricher(current, &pipeline.policy) }
+  for filter in pipeline.filters {
+    if !filter(&current) { return Ok(()) }
+  }
+  let _emitted = (pipeline.sink.emit)(&current)
+  match pipeline.audit {
+    case Some(audit) => (audit.emit)(&current)
+    case None => Ok(())
+  }
+}
+
+/// Reports problems met while binding a template to the self-log.
+export fn report(pipeline: &Pipeline, problems: &Array[Str]) -> () {
+  for problem in problems { SelfLog.write(&pipeline.selfLog, problem) }
+}

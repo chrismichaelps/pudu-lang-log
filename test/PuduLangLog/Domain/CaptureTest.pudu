@@ -1,0 +1,96 @@
+/** @Test.Domain.Capture.Suite — capture hints, limits, policies, and binding */
+module PuduLangLog.Domain.CaptureTest
+
+import Std.Bytes as Bytes
+import Std.Io as Io
+import Std.Test as Test
+import PuduLangLog.Domain.Capture as Capture
+import PuduLangLog.Domain.Parser as Parser
+import PuduLangLog as Log
+
+/// A text scalar value.
+fn text(held: Str) -> Log.Value { Log.Scalar(Log.Text(held)) }
+
+/// An integer scalar value.
+fn int(held: Int) -> Log.Value { Log.Scalar(Log.Integer(held)) }
+
+/// A property.
+fn property(name: Str, held: Log.Value) -> Log.Property { Log.Property{name: name, value: held} }
+
+/// A tagged structure.
+fn structure(tag: Str, properties: Array[Log.Property]) -> Log.Value { Log.Structure(Log.Structure{tag: Some(tag), properties: properties}) }
+
+/// A structure nested `levels` deep around an integer.
+fn nested(levels: Int) -> Log.Value {
+  var held = int(1)
+  var count = 0
+  while count < levels {
+    held = structure("N", [property("Inner", held)])
+    count = count + 1
+  }
+  held
+}
+
+/// The properties bound by default policy.
+fn bound(template: Str, arguments: Array[Log.Value]) -> Capture.Bound {
+  Capture.bind(&Capture.defaults(), &Parser.parse(template), &arguments)
+}
+
+/// Runs the suite.
+fn main() -> Int {
+  let policy = Capture.defaults()
+  let user = structure("User", [property("Name", text("Ada")), property("Password", text("secret"))])
+  let limited = Capture.Policy{..Capture.defaults(), maximumStringLength: 5, maximumCollectionCount: 2}
+  let shallow = Capture.Policy{..Capture.defaults(), maximumDepth: 2}
+  let redacting = Capture.Policy{..Capture.defaults(), transforms: [Capture.Transform{tag: "User", apply: |_held: Log.Value| structure("Redacted", [property("Name", text("Ada"))])}]}
+  let scalarUsers = Capture.Policy{..Capture.defaults(), scalars: ["User"]}
+  let custom = Capture.Policy{..Capture.defaults(), custom: [fn(held: &Log.Value) -> Option[Log.Value] { if *held == user { Some(text("custom")) } else { None } }]}
+  let long = Bytes.fromArray(&Bytes.toArray(&Bytes.fromText("0123456789abcdef")).concat(Bytes.toArray(&Bytes.fromText("x".repeat(1100)))))
+  let checks = Test.suite("Domain.Capture", &[
+      Test.equals("scalars are kept", &Capture.capture(&policy, &int(3), Log.Default), &int(3)),
+      Test.equals("structures render to text by default", &Capture.capture(&policy, &user, Log.Default), &text("User \{ Name: \"Ada\", Password: \"secret\" \}")),
+      Test.equals("destructuring keeps structures", &Capture.capture(&policy, &user, Log.Destructure), &user),
+      Test.equals("stringifying renders to text", &Capture.capture(&policy, &Log.Sequence([int(1), text("a")]), Log.Stringify), &text("[1, a]")),
+      Test.equals("stringified text is itself", &Capture.capture(&policy, &text("x"), Log.Stringify), &text("x")),
+      Test.equals("sequences are kept by default", &Capture.capture(&policy, &Log.Sequence([int(1)]), Log.Default), &Log.Sequence([int(1)])),
+      Test.equals("structures inside sequences render by default", &Capture.capture(&policy, &Log.Sequence([structure("P", [])]), Log.Default), &Log.Sequence([text("P \{ \}")])),
+      Test.equals("destructuring reaches into sequences", &Capture.capture(&policy, &Log.Sequence([structure("P", [])]), Log.Destructure), &Log.Sequence([structure("P", [])])),
+      Test.equals("long text is cut with an ellipsis", &Capture.capture(&limited, &text("abcdefgh"), Log.Default), &text("abcd…")),
+      Test.equals("text at the limit is kept", &Capture.capture(&limited, &text("abcde"), Log.Default), &text("abcde")),
+      Test.equals("stringified text is cut too", &Capture.capture(&limited, &int(1234567), Log.Stringify), &text("1234…")),
+      Test.equals("collections are cut to the count", &Capture.capture(&limited, &Log.Sequence([int(1), int(2), int(3)]), Log.Default), &Log.Sequence([int(1), int(2)])),
+      Test.equals("dictionaries are cut to the count", &Capture.capture(&limited, &Log.Dictionary([Log.Entry{key: Log.Text("abcdefg"), value: int(1)}, Log.Entry{key: Log.Integer(2), value: int(2)}, Log.Entry{key: Log.Integer(3), value: int(3)}]), Log.Default), &Log.Dictionary([Log.Entry{key: Log.Text("abcd…"), value: int(1)}, Log.Entry{key: Log.Integer(2), value: int(2)}])),
+      Test.equals("nesting past the depth becomes null", &Capture.capture(&shallow, &nested(2), Log.Destructure), &structure("N", [property("Inner", structure("N", [property("Inner", Log.Scalar(Log.Null))]))])),
+      Test.equals("nesting within the depth is kept", &Capture.capture(&shallow, &nested(1), Log.Destructure), &nested(1)),
+      Test.equals("the default depth keeps ten levels", &(Capture.capture(&policy, &nested(9), Log.Destructure) == nested(9), Capture.capture(&policy, &nested(10), Log.Destructure) == nested(10)), &(true, false)),
+      Test.equals("a transform replaces its tag", &Capture.capture(&redacting, &user, Log.Destructure), &structure("Redacted", [property("Name", text("Ada"))])),
+      Test.equals("a transform applies only when destructuring", &Capture.capture(&redacting, &user, Log.Default), &Capture.capture(&policy, &user, Log.Default)),
+      Test.equals("scalar tags render to text even when destructured", &Capture.capture(&scalarUsers, &user, Log.Destructure), &Capture.capture(&policy, &user, Log.Default)),
+      Test.equals("custom policies come first", &Capture.capture(&custom, &user, Log.Destructure), &text("custom")),
+      Test.equals("custom policies pass over what they decline", &Capture.capture(&custom, &structure("Other", []), Log.Destructure), &structure("Other", [])),
+      Test.equals("long byte strings keep a prefix and their length", &Capture.capture(&policy, &Log.Scalar(Log.Binary(long)), Log.Default), &text("30313233343536373839616263646566... (1116 bytes)")),
+      Test.equals("short byte strings are kept", &Capture.capture(&policy, &Log.Scalar(Log.Binary(Bytes.fromText("ab"))), Log.Default), &Log.Scalar(Log.Binary(Bytes.fromText("ab")))),
+      Test.equals("named holes bind left to right", &bound("\{A\} \{B\}", [int(1), int(2)]), &Capture.Bound{properties: [property("A", int(1)), property("B", int(2))], problems: []}),
+      Test.equals("hints apply while binding", &bound("\{@U\} \{$V\}", [user, int(5)]).properties, &[property("U", user), property("V", text("5"))]),
+      Test.equals("extra arguments are kept by index", &bound("\{A\}", [int(1), int(2), int(3)]), &Capture.Bound{properties: [property("A", int(1)), property("__1", int(2)), property("__2", int(3))], problems: ["Named property count does not match parameter count: \{A\}"]}),
+      Test.equals("missing arguments leave holes unbound", &bound("\{A\} \{B\}", [int(1)]), &Capture.Bound{properties: [property("A", int(1))], problems: ["Named property count does not match parameter count: \{A\} \{B\}"]}),
+      Test.equals("no arguments for holes", &bound("\{A\}", []), &Capture.Bound{properties: [], problems: ["Required properties not provided for: \{A\}"]}),
+      Test.equals("no arguments and no holes", &bound("plain", []), &Capture.Bound{properties: [], problems: []}),
+      Test.equals("arguments without holes are dropped", &bound("plain", [int(1)]), &Capture.Bound{properties: [], problems: ["Parameters provided for message template with no properties: plain"]}),
+      Test.equals("a repeated name keeps its last value", &bound("\{A\} \{A\}", [int(1), int(2)]).properties, &[property("A", int(2))]),
+      Test.equals("numbered holes bind by number", &bound("\{1\} \{0\}", [int(10), int(11)]), &Capture.Bound{properties: [property("0", int(10)), property("1", int(11))], problems: []}),
+      Test.equals("a number past the arguments is reported", &bound("\{0\} \{2\}", [int(10), int(11)]), &Capture.Bound{properties: [property("0", int(10))], problems: ["Unassigned positional value 2 in: \{0\} \{2\}", "Positional property count does not match parameter count: \{0\} \{2\}"]}),
+      Test.equals("a repeated number binds once", &bound("\{0\} \{0\}", [int(10)]).properties, &[property("0", int(10))]),
+      Test.equals("mixed holes bind by name and are reported", &bound("\{0\} \{Name\}", [int(1), int(2)]), &Capture.Bound{properties: [property("0", int(1)), property("Name", int(2))], problems: ["Message template is malformed: \{0\} \{Name\}"]}),
+      Test.equals("sequences past the depth hold null and are reported", &Capture.bind(&shallow, &Parser.parse("\{L\}"), &[Log.Sequence([Log.Sequence([Log.Sequence([int(1)])]), int(2)])]), &Capture.Bound{properties: [property("L", Log.Sequence([Log.Sequence([Log.Scalar(Log.Null)]), int(2)]))], problems: ["Maximum destructuring depth reached."]}),
+      Test.equals("dictionaries past the depth hold null and are reported", &Capture.bind(&shallow, &Parser.parse("\{D\}"), &[Log.Dictionary([Log.Entry{key: Log.Text("a"), value: Log.Sequence([Log.Sequence([int(1)])])}, Log.Entry{key: Log.Text("b"), value: int(2)}])]), &Capture.Bound{properties: [property("D", Log.Dictionary([Log.Entry{key: Log.Text("a"), value: Log.Sequence([Log.Scalar(Log.Null)])}, Log.Entry{key: Log.Text("b"), value: int(2)}]))], problems: ["Maximum destructuring depth reached."]}),
+      Test.equals("shallow values bind without problems", &Capture.bind(&shallow, &Parser.parse("\{$S\} \{L\} \{D\} \{U\} \{@V\}"), &[nested(5), Log.Sequence([int(1)]), Log.Dictionary([Log.Entry{key: Log.Text("k"), value: int(1)}]), nested(5), structure("P", [property("A", int(1))])]).problems, &[]),
+      Test.equals("byte strings of exactly the limit are kept", &Capture.capture(&policy, &Log.Scalar(Log.Binary(Bytes.fromText("y".repeat(1024)))), Log.Default), &Log.Scalar(Log.Binary(Bytes.fromText("y".repeat(1024))))),
+      Test.equals("binding past the depth is reported", &Capture.bind(&shallow, &Parser.parse("\{@N\}"), &[nested(3)]).problems, &["Maximum destructuring depth reached."])
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

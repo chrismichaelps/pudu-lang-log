@@ -1,0 +1,122 @@
+/** @Log.Timing.Operation — measures a unit of work and logs its outcome */
+module PuduLangLog.Timing
+
+import Std.Decimal as Decimal
+import Std.Sync as Sync
+import Std.Time as Time
+import PuduLangLog.Domain.Levels as Levels
+import PuduLangLog.Failure as Failure
+import PuduLangLog as Log
+import PuduLangLog.Logger as Logger
+
+/** @Log.Timing.Operation — a timed unit of work awaiting its outcome */
+export type Operation = {
+  logger: Logger.Logger,
+  template: Str,
+  arguments: Array[Log.Value],
+  started: Int,
+  completion: Log.Level,
+  abandonment: Log.Level,
+  warningAfter: Option[Int],
+  properties: Array[(Str, Log.Value)],
+  finished: Sync.Cell[Bool],
+  elapsed: fn() -> Int
+}
+
+/// Starts timing an operation described by a template and its arguments. Nothing is written until
+/// it is completed or abandoned.
+export fn begin(logger: &Logger.Logger, template: Str, arguments: Array[Log.Value]) -> Operation {
+  beginWith(logger, template, arguments, fn() -> Int { Time.elapsed() })
+}
+
+/// Starts timing with a millisecond counter of the caller's choice, such as a test's.
+export fn beginWith(logger: &Logger.Logger, template: Str, arguments: Array[Log.Value], elapsed: fn() -> Int) -> Operation {
+  Operation {
+    logger: *logger,
+    template: template,
+    arguments: arguments,
+    started: elapsed(),
+    completion: Log.Information,
+    abandonment: Log.Warning,
+    warningAfter: None,
+    properties: [],
+    finished: Sync.cell(false),
+    elapsed: elapsed
+  }
+}
+
+/// Runs an action as a completed operation and answers its value.
+export fn run[T](logger: &Logger.Logger, template: Str, arguments: Array[Log.Value], action: fn() -> T) -> T {
+  let operation = begin(logger, template, arguments)
+  let answer = action()
+  operation.complete()
+  answer
+}
+
+/// Runs an action whose `Err` abandons the operation with the error as its failure, and answers its
+/// result.
+export fn runResult[T, E](logger: &Logger.Logger, template: Str, arguments: Array[Log.Value], kind: Str, action: fn() -> Result[T, E]) -> Result[T, E] {
+  let operation = begin(logger, template, arguments)
+  let answer = action()
+  match &answer {
+    case Ok(_) => operation.complete()
+    case Err(problem) => operation.abandonWith(Failure.from(kind, problem))
+  }
+  answer
+}
+
+/** @Log.Timing.Measuring — how an operation ends and is reported */
+export trait Measuring {
+  fn at(self: &Self, completion: Log.Level, abandonment: Log.Level) -> Self
+  fn warnAfter(self: &Self, millis: Int) -> Self
+  fn enrichWith(self: &Self, name: Str, held: Log.Value) -> Self
+  fn complete(self: &Self) -> ()
+  fn completeWith(self: &Self, name: Str, held: Log.Value) -> ()
+  fn abandon(self: &Self) -> ()
+  fn abandonWith(self: &Self, failure: Log.Failure) -> ()
+  fn cancel(self: &Self) -> ()
+}
+
+impl Measuring for Operation {
+  /// The operation reporting completion and abandonment at other levels.
+  fn at(self: &Self, completion: Log.Level, abandonment: Log.Level) -> Self { Operation{..*self, completion: completion, abandonment: abandonment} }
+
+  /// The operation reporting a completion slower than `millis` at `Warning` or above.
+  fn warnAfter(self: &Self, millis: Int) -> Self { Operation{..*self, warningAfter: Some(millis)} }
+
+  /// The operation adding a property to its outcome event.
+  fn enrichWith(self: &Self, name: Str, held: Log.Value) -> Self { Operation{..*self, properties: self.properties.push((name, held))} }
+
+  /// Writes `<template> completed in <Elapsed> ms` at the completion level.
+  fn complete(self: &Self) -> () { finish(self, "completed", None, []) }
+
+  /// Writes the completion with one more property, such as a result count.
+  fn completeWith(self: &Self, name: Str, held: Log.Value) -> () { finish(self, "completed", None, [(name, held)]) }
+
+  /// Writes `<template> abandoned in <Elapsed> ms` at the abandonment level.
+  fn abandon(self: &Self) -> () { finish(self, "abandoned", None, []) }
+
+  /// Writes the abandonment carrying a failure.
+  fn abandonWith(self: &Self, failure: Log.Failure) -> () { finish(self, "abandoned", Some(failure), []) }
+
+  /// Ends the operation without writing anything.
+  fn cancel(self: &Self) -> () { let _ended = Sync.swap(&self.finished, true) }
+}
+
+/// Writes the outcome once: `Outcome` and `Elapsed` follow the template's own arguments, and the
+/// operation's extra properties are attached to the event.
+fn finish(operation: &Operation, outcome: Str, failure: Option[Log.Failure], extra: Array[(Str, Log.Value)]) -> () {
+  if Sync.swap(&operation.finished, true) == Ok(true) { return () }
+  let millis = (operation.elapsed)() - operation.started
+  let slow = match operation.warningAfter {
+    case Some(limit) => millis > limit
+    case None => false
+  }
+  let base = if outcome == "completed" { operation.completion } else { operation.abandonment }
+  let level = if slow { Levels.stricter(base, Log.Warning) } else { base }
+  var logger = operation.logger
+  for property in operation.properties.concat(extra) { logger = logger.forContext(property[0], property[1]) }
+  let elapsed = Log.Scalar(Log.Real(Decimal.toFloat64(Decimal.fromInt(millis))))
+  let arguments = operation.arguments.push(Log.Scalar(Log.Text(outcome))).push(elapsed)
+  let _written = logger.tryWrite(level, failure, operation.template + " \{Outcome:l\} in \{Elapsed:0.0\} ms", arguments)
+}

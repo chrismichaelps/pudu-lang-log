@@ -1,0 +1,84 @@
+/** @Test.Domain.Numbers.Suite — standard and custom numeric formats */
+module PuduLangLog.Domain.NumbersTest
+
+import Std.Io as Io
+import Std.Test as Test
+import PuduLangLog.Domain.Numbers as Numbers
+
+/// The integer under a format, or `?` when the format is not understood.
+fn integer(value: Int, format: Str) -> Str {
+  match Numbers.formatInteger(value, format) {
+    case Some(text) => text
+    case None => "?"
+  }
+}
+
+/// The exact number under a format, or `?`.
+fn exact(value: Decimal, format: Str) -> Str {
+  match Numbers.formatExact(value, format) {
+    case Some(text) => text
+    case None => "?"
+  }
+}
+
+/// The float under a format, or `?`.
+fn real(value: Float64, format: Str) -> Str {
+  match Numbers.formatReal(value, format) {
+    case Some(text) => text
+    case None => "?"
+  }
+}
+
+/// Runs the suite.
+fn main() -> Int {
+  let infinity = 1.0 / 0.0
+  let checks = Test.suite("Domain.Numbers", &[
+      Test.equals("digits of an exact number", &Numbers.digitsOf(1200.50d), &Numbers.Digits{negative: false, digits: "12005", exponent: 4}),
+      Test.equals("digits of a fraction", &Numbers.digitsOf(-0.0012d), &Numbers.Digits{negative: true, digits: "12", exponent: -2}),
+      Test.equals("zero has no digits and no sign", &(Numbers.digitsOf(0d), Numbers.digitsOf(-0.00d)), &(Numbers.Digits{negative: false, digits: "", exponent: 0}, Numbers.Digits{negative: false, digits: "", exponent: 0})),
+      Test.equals("fixed digits round half away from zero", &(Numbers.fixed(&Numbers.digitsOf(2.345d), 2), Numbers.fixed(&Numbers.digitsOf(9.995d), 2), Numbers.fixed(&Numbers.digitsOf(0.004d), 2)), &(("2", "35"), ("10", "00"), ("0", "00"))),
+      Test.equals("fixed digits pad whole numbers", &Numbers.fixed(&Numbers.digitsOf(1200d), 1), &("1200", "0")),
+      Test.equals("decimal integer format", &(integer(42, "D8"), integer(-42, "D5"), integer(-42, "D"), integer(0, "d3")), &("00000042", "-00042", "-42", "000")),
+      Test.equals("hexadecimal format", &(integer(255, "X"), integer(255, "x4"), integer(-1, "X"), integer(0, "X2"), integer(-256, "x")), &("FF", "00ff", "FFFFFFFFFFFFFFFF", "00", "ffffffffffffff00")),
+      Test.equals("the largest integer in hexadecimal", &integer(9223372036854775807, "X"), &"7FFFFFFFFFFFFFFF"),
+      Test.equals("number format groups thousands", &(integer(1234567, "N0"), integer(1234567, "N"), integer(-1234, "n1"), integer(123, "N0")), &("1,234,567", "1,234,567.00", "-1,234.0", "123")),
+      Test.equals("fixed format", &(integer(3, "F2"), exact(1234.5678d, "F2"), exact(-0.001d, "F2"), exact(2.5d, "F0"), exact(-2.5d, "F0")), &("3.00", "1234.57", "0.00", "3", "-3")),
+      Test.equals("currency format", &(integer(1234, "C"), exact(-5.5d, "C1")), &("¤1,234.00", "-¤5.5")),
+      Test.equals("percent format", &(real(1.0, "P"), real(0.1234, "P1"), real(1.5, "P0")), &("100.00 %", "12.3 %", "150 %")),
+      Test.equals("exponential format", &(integer(12345, "E"), integer(12345, "e2"), integer(0, "E"), real(-0.00012, "E1")), &("1.234500E+004", "1.23e+004", "0.000000E+000", "-1.2E-004")),
+      Test.equals("general format", &(integer(42, "G"), integer(12345, "G2"), exact(12345.678d, "G"), exact(0.000012345d, "G3"), exact(123.456d, "g4")), &("42", "1.2E+04", "12345.678", "1.23E-05", "123.5")),
+      Test.equals("general format of floats", &(real(0.1 + 0.2, "G"), real(12345.0, "G2"), real(0.5, "g")), &("0.30000000000000004", "1.2E+04", "0.5")),
+      Test.equals("round-trip format", &(integer(-7, "R"), exact(12.50d, "R"), real(0.1, "R")), &("-7", "12.50", "0.1")),
+      Test.equals("an unknown standard letter is not understood", &(integer(5, "Q"), exact(5d, "Z2"), real(1.0, "K")), &("?", "?", "?")),
+      Test.equals("zero-padded custom format", &(integer(7, "000"), integer(1234, "00"), integer(0, "0")), &("007", "1234", "0")),
+      Test.equals("optional digits", &(integer(0, "#"), integer(5, "##"), exact(0.5d, "#.##"), exact(1d, "0.##")), &("", "5", ".5", "1")),
+      Test.equals("custom decimals", &(integer(5, "0.00"), exact(2.25d, "0.0"), exact(2.35d, "0.0"), real(1.23456, "0.00"), real(0.5, "0")), &("5.00", "2.3", "2.4", "1.23", "1")),
+      Test.equals("custom grouping", &(integer(1234567, "#,##0"), real(1234.5, "#,##0.0"), integer(12, "#,##0")), &("1,234,567", "1,234.5", "12")),
+      Test.equals("literals between placeholders", &(integer(123456789, "000-00-0000"), integer(5551234567, "(###) ###-####")), &("123-45-6789", "(555) 123-4567")),
+      Test.equals("custom percent", &real(0.1234, "0.00%"), &"12.34%"),
+      Test.equals("quoted and escaped literals", &(integer(5, "'#'0"), integer(5, "\\#0"), integer(5, "0\" items\"")), &("#5", "#5", "5 items")),
+      Test.equals("a format without placeholders is literal", &integer(5, "abc"), &"abc"),
+      Test.equals("integer digits before a point without integer placeholders", &(exact(5.5d, ".00"), exact(0.5d, ".00")), &("5.50", ".50")),
+      Test.equals("negative custom values carry a sign", &(integer(-5, "000"), exact(-0.001d, "0.00")), &("-005", "0.00")),
+      Test.equals("sections for negative and zero values", &(real(-1234.5, "#,##0.0;(#,##0.0)"), real(0.0, "0;-0;zero"), integer(3, "0;(0);zero"), integer(-3, "0;(0)")), &("(1,234.5)", "zero", "3", "(3)")),
+      Test.equals("standard formats without a precision", &(exact(1.5d, "F"), real(1234.5, "N"), exact(0.5d, "P"), exact(2d, "E"), real(2.0, "C")), &("1.50", "1,234.50", "50.00 %", "2.000000E+000", "¤2.00")),
+      Test.equals("a two-digit precision", &(exact(1d, "F10"), integer(7, "D10")), &("1.0000000000", "0000000007")),
+      Test.equals("percent groups thousands", &real(12345.0, "P0"), &"1,234,500 %"),
+      Test.equals("rounding carries into the integer", &(exact(1.95d, "F1"), exact(0.995d, "F2"), exact(19.96d, "0.0")), &("2.0", "1.00", "20.0")),
+      Test.equals("zero with two sections uses the first", &integer(0, "0;(0)"), &"0"),
+      Test.equals("a quoted section mark is literal", &integer(5, "'a;b'0"), &"a;b5"),
+      Test.equals("an escape covers one character only", &integer(-1, "\\;0;neg"), &"neg"),
+      Test.equals("a comma before every placeholder does not group", &integer(1234567, ",0"), &"1234567"),
+      Test.equals("more fraction placeholders than digits", &exact(1.5d, "0.###"), &"1.5"),
+      Test.equals("an escaped section mark is not a section", &integer(-2, "0\\;x"), &"-2;x"),
+      Test.equals("shortest float text", &(Numbers.realText(0.1), Numbers.realText(100.0), Numbers.realText(-2.5), Numbers.realText(0.0), Numbers.realText(123456789.125)), &("0.1", "100", "-2.5", "0", "123456789.125")),
+      Test.equals("float exponents switch outside -4 to 14", &(Numbers.realText(1.0e30), Numbers.realText(1.0e-7), Numbers.realText(1.0e15), Numbers.realText(1.0e14), Numbers.realText(0.0001), Numbers.realText(0.00001)), &("1E+30", "1E-07", "1E+15", "100000000000000", "0.0001", "1E-05")),
+      Test.equals("floats keep every digit of their shortest text", &Numbers.realText(0.1 + 0.2), &"0.30000000000000004"),
+      Test.equals("infinities and NaN keep their names", &(Numbers.realText(infinity), real(infinity, "F2"), real(0.0 / 0.0, "N")), &("Infinity", "Infinity", "NaN"))
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

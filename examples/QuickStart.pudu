@@ -1,0 +1,19 @@
+/** @Example.QuickStart.Program — a console logger with context and structure */
+module QuickStart
+
+import PuduLangLog.Configuration as Configuration
+import PuduLangLog as Log
+import PuduLangLog.Logger as Logger
+import PuduLangLog.Sinks.Console as Console
+import PuduLangLog.Value as Value
+
+/// Writes a few events to the console and answers 0.
+fn main() -> Int {
+  let logger = Configuration.create().minimumLevel(Log.Debug).enrichWithProperty("Application", Value.text("QuickStart")).writeTo(Console.sink(Console.Options{..Console.defaults(), outputTemplate: "[\{Timestamp:HH:mm:ss\} \{Level:u3\}] \{Message:lj\} \{Properties\}\{NewLine\}\{Exception\}"})).createLogger()
+  logger.information("Hello, \{Name\}!", [Value.text("world")])
+  let orders = logger.forSource("QuickStart.Orders")
+  orders.debug("Placing order \{@Order\}", [Value.structure("Order", [("Id", Value.int(42)), ("Items", Value.list([Value.text("tea"), Value.text("scones")]))])])
+  orders.warning("Order \{OrderId\} took \{Elapsed:0.0\} ms", [Value.int(42), Value.float(1234.567)])
+  Logger.close(&logger)
+  0
+}

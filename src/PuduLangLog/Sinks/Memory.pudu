@@ -1,0 +1,64 @@
+/** @Log.Sinks.Memory.Sink — keeps events in memory for inspection */
+module PuduLangLog.Sinks.Memory
+
+import Std.List as List
+import Std.Sync as Sync
+import PuduLangLog.Domain.Display as Display
+import PuduLangLog as Log
+import PuduLangLog.Sink as Sink
+
+/** @Log.Sinks.Memory.Store — the events a memory sink has received */
+export type Memory = { events: Sync.Cell[Array[Log.Event]], lock: Sync.Mutex, capacity: Int }
+
+/// A store keeping every event.
+export fn create() -> Memory { bounded(2147483647) }
+
+/// A store keeping only the most recent `capacity` events.
+export fn bounded(capacity: Int) -> Memory {
+  let none: Array[Log.Event] = []
+  Memory{events: Sync.cell(none), lock: Sync.mutex(), capacity: capacity}
+}
+
+/// The sink that adds events to the store.
+export fn sink(memory: &Memory) -> Sink.Sink {
+  let store = *memory
+  Sink.of(fn(event: &Log.Event) -> Result[(), Str] {
+      let _added = Sync.withLock(&store.lock, fn() -> () {
+          let kept = events(&store).push(*event)
+          let _stored = Sync.set(&store.events, List.drop(&kept, kept.length() - store.capacity))
+        })
+      Ok(())
+    })
+}
+
+/// The events received, oldest first.
+export fn events(memory: &Memory) -> Array[Log.Event] {
+  match Sync.get(&memory.events) {
+    case Ok(held) => held
+    case Err(_) => []
+  }
+}
+
+/// The rendered message of every event, oldest first.
+export fn messages(memory: &Memory) -> Array[Str] {
+  events(memory).map(|event: Log.Event| Display.plain(&Display.message(&event.template, &event.properties, &None)))
+}
+
+/// The events a predicate accepts.
+export fn matching(memory: &Memory, predicate: fn(&Log.Event) -> Bool) -> Array[Log.Event] {
+  events(memory).filter(|event: Log.Event| predicate(&event))
+}
+
+/// The events written from a message template.
+export fn withTemplate(memory: &Memory, template: Str) -> Array[Log.Event] {
+  events(memory).filter(|event: Log.Event| event.template.text == template)
+}
+
+/// The most recent event.
+export fn latest(memory: &Memory) -> Option[Log.Event] { List.last(&events(memory)) }
+
+/// Forgets every event.
+export fn clear(memory: &Memory) -> () {
+  let none: Array[Log.Event] = []
+  let _cleared = Sync.withLock(&memory.lock, fn() -> () { let _stored = Sync.set(&memory.events, none) })
+}

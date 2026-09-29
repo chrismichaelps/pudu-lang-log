@@ -1,0 +1,56 @@
+/** @Log.Formatting.Compact.Formatter — events as compact newline-delimited JSON */
+module PuduLangLog.Formatting.Compact
+
+import PuduLangLog.Domain.Dates as Dates
+import PuduLangLog.Domain.Display as Display
+import PuduLangLog.Domain.EventId as EventId
+import PuduLangLog.Domain.Json as Json
+import PuduLangLog.Domain.Levels as Levels
+import PuduLangLog as Log
+
+/// The UTC timestamp pattern of the `@t` member.
+const UTC_PATTERN: Str = "yyyy'-'MM'-'dd'T'HH':'mm':'ss'.'fffffff'Z'"
+
+/// A formatter writing each event as one line: `@t`, `@mt`, `@r` for formatted holes, `@l` unless
+/// the level is `Information`, `@x`, `@tr`, `@sp`, and the properties, names starting with `@`
+/// doubled to `@@`.
+export fn compact() -> Log.Formatter {
+  fn(event: &Log.Event) -> Str {
+    var members = [timestampOf(event), "\"@mt\":" + Json.quote(event.template.text)]
+    let formatted = event.template.holes.filter(|hole: Log.Hole| hole.format != None)
+    if !formatted.isEmpty() {
+      let renderings = formatted.map(|hole: Log.Hole| Json.quote(Display.plain(&Display.hole(&hole, &event.properties, false, false))))
+      members = members.push("\"@r\":[" + renderings.join(",") + "]")
+    }
+    "\{" + members.concat(tail(event)).join(",") + "\}\n"
+  }
+}
+
+/// A formatter like `compact` that writes the rendered message as `@m` and the template's
+/// identifier as `@i` in place of the template and renderings.
+export fn rendered() -> Log.Formatter {
+  fn(event: &Log.Event) -> Str {
+    let message = Display.plain(&Display.message(&event.template, &event.properties, &None))
+    let members = [timestampOf(event), "\"@m\":" + Json.quote(message), "\"@i\":\"" + EventId.hex(EventId.compute(event.template.text)) + "\""]
+    "\{" + members.concat(tail(event)).join(",") + "\}\n"
+  }
+}
+
+/// The `@t` member.
+fn timestampOf(event: &Log.Event) -> Str {
+  "\"@t\":" + Json.quote(Dates.formatMoment(&Log.Timestamp{..event.timestamp, offset: 0}, &Some(UTC_PATTERN)))
+}
+
+/// The level, failure, trace, span, and property members.
+fn tail(event: &Log.Event) -> Array[Str] {
+  var members: Array[Str] = []
+  if event.level != Log.Information { members = members.push("\"@l\":" + Json.quote(Levels.name(event.level))) }
+  if let Some(problem) = event.failure { members = members.push("\"@x\":" + Json.quote(Display.failure(&problem))) }
+  if let Some(trace) = event.traceId { members = members.push("\"@tr\":" + Json.quote(trace)) }
+  if let Some(span) = event.spanId { members = members.push("\"@sp\":" + Json.quote(span)) }
+  for property in event.properties {
+    let name = if property.name.startsWith("@") { "@" + property.name } else { property.name }
+    members = members.push(Json.quote(name) + ":" + Json.value(&property.value, &Some(Display.TYPE_TAG)))
+  }
+  members
+}

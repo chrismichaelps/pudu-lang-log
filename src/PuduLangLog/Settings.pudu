@@ -1,0 +1,143 @@
+/** @Log.Settings.Loader — a configuration read from settings */
+module PuduLangLog.Settings
+
+import Std.Env as Env
+import Std.Io as Io
+import Std.List as List
+import PuduLangLog.Configuration as Configuration
+import PuduLangLog.Domain.Settings as Plan
+import PuduLangLog.Expressions as Expressions
+import PuduLangLog.LevelSwitch as LevelSwitch
+import PuduLangLog as Log
+import PuduLangLog.Settings.Registry as Registry
+import PuduLangLog.Sink as Sink
+
+/** @Log.Settings.Loaded — a configuration and the level switches it declared */
+export type Loaded = { configuration: Configuration.Configuration, switches: Array[(Str, LevelSwitch.LevelSwitch)] }
+
+/// The sink argument restricting it to a minimum level.
+const MINIMUM_ARGUMENT: Str = "restrictedToMinimumLevel"
+
+/// The base configuration changed by the settings, or every setting that could not be used. Keys
+/// are colon-separated, section names ignore case, and sinks and enrichers are found by name in
+/// the registry:
+///
+/// - `MinimumLevel` or `MinimumLevel:Default`: the minimum level.
+/// - `MinimumLevel:ControlledBy`: the level switch, `$name`, controlling the minimum.
+/// - `MinimumLevel:Override:Source`: the level or level switch of a source prefix.
+/// - `LevelSwitches:$name`: a level switch and its initial level.
+/// - `Properties:Name`: a text property added to every event.
+/// - `Enrich:i` (or `Enrich:i:Name`) and `Enrich:i:Args:arg`: a named enricher.
+/// - `WriteTo:i` (or `WriteTo:i:Name`) and `WriteTo:i:Args:arg`: a named sink; the arguments
+///   `restrictedToMinimumLevel` and `levelSwitch` apply to any sink. `AuditTo` is the same for
+///   audit sinks.
+/// - `Filter:i:ByExcluding` and `Filter:i:ByIncludingOnly`: a filter expression.
+/// - `Destructure:MaximumDepth`, `Destructure:MaximumStringLength`,
+///   `Destructure:MaximumCollectionCount`, and `Destructure:AsScalar:i`: capture limits and tags
+///   captured as text.
+export fn apply(base: &Configuration.Configuration, pairs: &Array[(Str, Str)], registry: &Registry.Registry) -> Result[Loaded, Array[Str]] {
+  let read = Plan.read(pairs)
+  let plan = read.plan
+  var problems = read.problems
+  let switches = plan.switches.map(|entry: (Str, Log.Level)| (entry[0], LevelSwitch.create(entry[1])))
+  var configuration = *base
+  if let Some(level) = plan.minimum { configuration = configuration.minimumLevel(level) }
+  if let Some(name) = plan.controlledBy {
+    if let Some(control) = switchOf(&switches, name) { configuration = configuration.controlledBy(&control) }
+  }
+  for (source, chosen) in plan.overrides {
+    match (Plan.levelOf(chosen), switchOf(&switches, Plan.switchName(chosen))) {
+      case (Some(level), _) => { configuration = configuration.overrideLevel(source, level) }
+      case (None, Some(control)) => { configuration = configuration.overrideSwitch(source, &control) }
+      case _ => {}
+    }
+  }
+  for (name, text) in plan.properties { configuration = configuration.enrichWithProperty(name, Log.Scalar(Log.Text(text))) }
+  for target in plan.enrichers {
+    match Registry.enricherNamed(registry, target.name) {
+      case Some(factory) => match factory(&target.arguments) {
+        case Ok(enricher) => { configuration = configuration.enrichWith(enricher) }
+        case Err(problem) => { problems = problems.push("The enricher `" + target.name + "`: " + problem) }
+      }
+      case None => { problems = problems.push("No enricher is registered as `" + target.name + "`") }
+    }
+  }
+  for filter in plan.filters {
+    match Expressions.predicate(filter.expression) {
+      case Ok(test) => { configuration = if filter.including { configuration.filterIncludingOnly(test) } else { configuration.filterExcluding(test) } }
+      case Err(problem) => { problems = problems.push("The filter `" + filter.expression + "`: " + problem) }
+    }
+  }
+  if let Some(depth) = plan.maximumDepth { configuration = configuration.maximumDepth(depth) }
+  if let Some(length) = plan.maximumStringLength { configuration = configuration.maximumStringLength(length) }
+  if let Some(size) = plan.maximumCollectionCount { configuration = configuration.maximumCollectionCount(size) }
+  for tag in plan.scalars { configuration = configuration.destructureAsScalar(tag) }
+  for (audit, targets) in [(false, plan.sinks), (true, plan.audits)] {
+    for target in targets {
+      match sinkOf(&target, registry, &switches) {
+        case Ok(sink) => { configuration = if audit { configuration.auditTo(sink) } else { configuration.writeTo(sink) } }
+        case Err(problem) => { problems = problems.push(problem) }
+      }
+    }
+  }
+  if !problems.isEmpty() { return Err(problems) }
+  Ok(Loaded{configuration: configuration, switches: switches})
+}
+
+/// The sink a target names, restricted by its minimum level and level switch arguments.
+fn sinkOf(target: &Plan.Target, registry: &Registry.Registry, switches: &Array[(Str, LevelSwitch.LevelSwitch)]) -> Result[Sink.Sink, Str] {
+  let factory = match Registry.sinkNamed(registry, target.name) {
+    case Some(found) => found
+    case None => { return Err("No sink is registered as `" + target.name + "`") }
+  }
+  let own = target.arguments.filter(|entry: (Str, Str)| entry[0].toLower() != MINIMUM_ARGUMENT.toLower() && entry[0].toLower() != Plan.LEVEL_SWITCH_ARGUMENT.toLower())
+  var sink = match factory(&own) {
+    case Ok(built) => built
+    case Err(problem) => { return Err("The sink `" + target.name + "`: " + problem) }
+  }
+  if let Some(text) = Plan.argument(target, MINIMUM_ARGUMENT) {
+    match Plan.levelOf(text) {
+      case Some(level) => { sink = Sink.restricted(sink, level) }
+      case None => { return Err("The sink `" + target.name + "`: `" + text + "` is not a level") }
+    }
+  }
+  if let Some(name) = Plan.argument(target, Plan.LEVEL_SWITCH_ARGUMENT) {
+    if let Some(control) = switchOf(switches, Plan.switchName(name)) { sink = Sink.controlled(sink, &control) }
+  }
+  Ok(sink)
+}
+
+/// The declared level switch of a name.
+fn switchOf(switches: &Array[(Str, LevelSwitch.LevelSwitch)], name: Str) -> Option[LevelSwitch.LevelSwitch] {
+  let found = List.find(switches, |entry: (Str, LevelSwitch.LevelSwitch)| entry[0] == name) ?
+  Some(found[1])
+}
+
+/// The level switch the settings declared under a name, with or without its `$`, to change the
+/// level while the program runs.
+export fn switchNamed(loaded: &Loaded, name: Str) -> Option[LevelSwitch.LevelSwitch] { switchOf(&loaded.switches, Plan.switchName(name)) }
+
+/// The settings of a JSON document under a top-level section, such as `Log`; the whole document
+/// when the section is empty.
+export fn fromJson(text: Str, section: Str) -> Result[Array[(Str, Str)], Str] { Plan.fromJson(text, section) }
+
+/// The settings of a JSON file under a top-level section.
+export fn fromJsonFile(path: Str, section: Str) -> Result[Array[(Str, Str)], Str] {
+  match Io.read(path) {
+    case Ok(text) => fromJson(text, section)
+    case Err(problem) => Err("Cannot read `" + path + "`: " + show(problem))
+  }
+}
+
+/// The settings of environment variables named `PREFIX__Section__Key`, the prefix ignoring case:
+/// `APP__MinimumLevel__Default=Debug` sets `MinimumLevel:Default`.
+export fn fromEnvironment(prefix: Str) -> Array[(Str, Str)] {
+  var found: Array[(Str, Str)] = []
+  for (name, value) in Env.variables() {
+    if let Some(key) = Plan.environmentKey(name, prefix) { found = found.push((key, value)) }
+  }
+  found
+}
+
+/// An argument of a sink or enricher factory, its name ignoring case.
+export fn argument(arguments: &Array[(Str, Str)], name: Str) -> Option[Str] { Plan.argument(&Plan.Target{name: "", arguments: *arguments}, name) }

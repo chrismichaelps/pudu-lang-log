@@ -1,0 +1,33 @@
+/** @Log.Domain.Properties.Module — ordered property lists keyed by name */
+module PuduLangLog.Domain.Properties
+
+import Std.List as List
+import PuduLangLog as Log
+
+/// The value bound to a name.
+export fn find(properties: &Array[Log.Property], name: Str) -> Option[Log.Value] {
+  let found = List.find(properties, |property: Log.Property| property.name == name) ?
+  Some(found.value)
+}
+
+/// Whether a name is bound.
+export fn has(properties: &Array[Log.Property], name: Str) -> Bool {
+  List.any(properties, |property: Log.Property| property.name == name)
+}
+
+/// The list with the name bound to the value, replacing an existing binding in place or adding
+/// it at the end.
+export fn put(properties: &Array[Log.Property], name: Str, value: Log.Value) -> Array[Log.Property] {
+  if !has(properties, name) { return properties.push(Log.Property{name: name, value: value}) }
+  properties.map(|property: Log.Property| if property.name == name { Log.Property{name: name, value: value} } else { property })
+}
+
+/// The list with the name bound to the value unless it is already bound.
+export fn putIfAbsent(properties: &Array[Log.Property], name: Str, value: Log.Value) -> Array[Log.Property] {
+  if has(properties, name) { *properties } else { properties.push(Log.Property{name: name, value: value}) }
+}
+
+/// The list without a binding for the name.
+export fn remove(properties: &Array[Log.Property], name: Str) -> Array[Log.Property] {
+  properties.filter(|property: Log.Property| property.name != name)
+}

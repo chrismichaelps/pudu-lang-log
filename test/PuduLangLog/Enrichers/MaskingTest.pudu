@@ -1,0 +1,53 @@
+/** @Test.Enrichers.Masking.Suite — sensitive values hidden before sinks */
+module PuduLangLog.Enrichers.MaskingTest
+
+import Std.Io as Io
+import Std.List as List
+import Std.Option as Option
+import Std.Result as Result
+import Std.Test as Test
+import PuduLangLog.Configuration as Configuration
+import PuduLangLog.Enricher as Enricher
+import PuduLangLog.Enrichers.Masking as Masking
+import PuduLangLog.Failure as Failure
+import PuduLangLog as Log
+import PuduLangLog.Logger as Logger
+import PuduLangLog.Sinks.Memory as Memory
+import PuduLangLog.Value as Value
+
+/// The latest message and failure a configured logger wrote after logging one event.
+fn written(configure: fn(Configuration.Configuration) -> Configuration.Configuration, template: Str, arguments: Array[Log.Value], failure: Option[Log.Failure]) -> (Str, Option[Log.Failure]) {
+  let memory = Memory.create()
+  let logger = configure(Configuration.create().writeTo(Memory.sink(&memory))).createLogger()
+  let _written = logger.tryWrite(Log.Information, failure, template, arguments)
+  let latest = Memory.latest(&memory)
+  (Option.unwrapOr(List.first(&Memory.messages(&memory)), ""), Option.andThen(latest, |event: Log.Event| event.failure))
+}
+
+/// Runs the suite.
+fn main() -> Int {
+  let byName = fn(configuration: Configuration.Configuration) -> Configuration.Configuration { configuration.enrichWith(Masking.properties(["Password", "token"], Masking.MASK)) }
+  let sensitive = Result.unwrapOr(Masking.sensitive("[hidden]"), Enricher.all([]))
+  let byPattern = fn(configuration: Configuration.Configuration) -> Configuration.Configuration { configuration.enrichWith(sensitive) }
+  let refused = Masking.patterns(["(open"], "*")
+  let ignoring = fn(configuration: Configuration.Configuration) -> Configuration.Configuration { configuration.destructureByIgnoring("User", ["Password"]) }
+  let masking = fn(configuration: Configuration.Configuration) -> Configuration.Configuration { configuration.destructureByMasking("User", ["password"], "#") }
+  let user = Value.structure("User", [("Name", Value.text("Ada")), ("Password", Value.text("s3cret"))])
+  let listed = written(byName, "Login \{User\} with \{Password\} and \{@Session\}", [Value.text("ada"), Value.text("s3cret"), Value.object([("Token", Value.text("abc")), ("Id", Value.int(4))])], None)
+  let contact = written(byPattern, "Mail \{To\} card \{Card\} iban \{Iban\} order \{Order\}", [Value.text("ada@example.org"), Value.text("4111 1111 1111 1111"), Value.text("GB82WEST12345698765432"), Value.int(1234567890123)], Some(Failure.causedBy(&Failure.of("Mail", "bounced for bob@example.com"), Failure.of("Smtp", "to eve@example.net"))))
+  let checks = Test.suite("Enrichers.Masking", &[
+      Test.equals("listed properties and members are hidden", &listed[0], &"Login \"ada\" with \"***\" and \{ Token: \"***\", Id: 4 \}"),
+      Test.equals("patterns hide addresses, card numbers, and account numbers", &contact[0], &"Mail \"[hidden]\" card \"[hidden]\" iban \"[hidden]\" order 1234567890123"),
+      Test.equals("patterns hide text in failures and their causes", &contact[1], &Some(Failure.causedBy(&Failure.of("Mail", "bounced for [hidden]"), Failure.of("Smtp", "to [hidden]")))),
+      Test.equals("text without matches is kept", &written(byPattern, "\{Note\}", [Value.text("call at 12:30")], None)[0], &"\"call at 12:30\""),
+      Test.that("a pattern that does not compile is refused", Result.isErr(&refused)),
+      Test.equals("destructuring can leave members out", &written(ignoring, "\{@User\}", [user], None)[0], &"User \{ Name: \"Ada\" \}"),
+      Test.equals("destructuring can mask members", &written(masking, "\{@User\}", [user], None)[0], &"User \{ Name: \"Ada\", Password: \"#\" \}"),
+      Test.equals("rules apply only to their tag", &written(ignoring, "\{@Other\}", [Value.structure("Other", [("Password", Value.int(1))])], None)[0], &"Other \{ Password: 1 \}")
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

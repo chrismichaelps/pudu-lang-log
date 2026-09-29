@@ -1,0 +1,227 @@
+/** @Log.Domain.Dates.Module — timestamp and duration format specifiers */
+module PuduLangLog.Domain.Dates
+
+import Std.Map as Map
+import Std.Math as Math
+import Std.Text as Text
+import Std.Time.Format as Calendar
+import PuduLangLog as Log
+
+/// Abbreviated weekday names, Sunday first.
+const WEEKDAYS: Array[Str] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+
+/// Full weekday names, Sunday first.
+const WEEKDAYS_FULL: Array[Str] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+
+/// Abbreviated month names, January first.
+const MONTHS: Array[Str] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+/// Full month names, January first.
+const MONTHS_FULL: Array[Str] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+
+/// The custom pattern each standard timestamp format stands for.
+const STANDARD: Map[Str, Str] = mapOf([
+    ("d", "MM/dd/yyyy"), ("D", "dddd, dd MMMM yyyy"), ("f", "dddd, dd MMMM yyyy HH:mm"),
+    ("F", "dddd, dd MMMM yyyy HH:mm:ss"), ("g", "MM/dd/yyyy HH:mm"), ("G", "MM/dd/yyyy HH:mm:ss"),
+    ("m", "MMMM dd"), ("M", "MMMM dd"), ("o", "yyyy'-'MM'-'dd'T'HH':'mm':'ss'.'fffffffzzz"),
+    ("O", "yyyy'-'MM'-'dd'T'HH':'mm':'ss'.'fffffffzzz"), ("r", "ddd, dd MMM yyyy HH':'mm':'ss 'GMT'"),
+    ("R", "ddd, dd MMM yyyy HH':'mm':'ss 'GMT'"), ("s", "yyyy'-'MM'-'dd'T'HH':'mm':'ss"), ("t", "HH:mm"),
+    ("T", "HH:mm:ss"), ("u", "yyyy'-'MM'-'dd HH':'mm':'ss'Z'"), ("U", "dddd, dd MMMM yyyy HH:mm:ss"),
+    ("y", "yyyy MMMM"), ("Y", "yyyy MMMM")
+  ])
+
+/// Standard timestamp formats that render the moment in UTC.
+const UNIVERSAL: Array[Str] = ["r", "R", "u", "U"]
+
+/// The pattern a timestamp renders with when no format is given.
+const DEFAULT_MOMENT: Str = "MM/dd/yyyy HH:mm:ss zzz"
+
+/// Milliseconds in a day.
+const DAY: Int = 86400000
+
+/// Milliseconds in an hour.
+const HOUR: Int = 3600000
+
+/// Milliseconds in a minute.
+const MINUTE: Int = 60000
+
+/// The timestamp under a format: a standard one-letter format, a custom pattern, or none for
+/// `MM/dd/yyyy HH:mm:ss zzz`.
+export fn formatMoment(moment: &Log.Timestamp, format: &Option[Str]) -> Str {
+  let given = match format {
+    case Some(text) => text
+    case None => DEFAULT_MOMENT
+  }
+  match Map.get(&STANDARD, given) {
+    case Some(pattern) => {
+      let shown = if UNIVERSAL.contains(given) { Log.Timestamp{..*moment, offset: 0} } else { *moment }
+      render(&shown, pattern)
+    }
+    case None => render(moment, given)
+  }
+}
+
+/// The timestamp in round-trip form, `2026-09-28T18:03:00.1230000+02:00`.
+export fn roundTrip(moment: &Log.Timestamp) -> Str { formatMoment(moment, &Some("o")) }
+
+/// The duration under a format: `c` or none for `[-][d.]hh:mm:ss[.fffffff]`, `g` for
+/// `[-][d:]h:mm:ss[.FFFFFFF]`, `G` for `[-]d:hh:mm:ss.fffffff`, or a custom pattern of `d`, `h`,
+/// `m`, `s`, `f`, and `F`.
+export fn formatSpan(millis: Int, format: &Option[Str]) -> Str {
+  let given = match format {
+    case Some(text) => text
+    case None => "c"
+  }
+  let minus = if millis < 0 { "-" } else { "" }
+  let size = Math.abs(millis)
+  let days = size / DAY
+  let hours = size % DAY / HOUR
+  let minutes = size % HOUR / MINUTE
+  let seconds = size % MINUTE / 1000
+  let fraction = Text.padLeft(show(size % 1000), 3, "0") + "0000"
+  let clock = two(minutes) + ":" + two(seconds)
+  if given == "c" {
+    let dayPart = if days > 0 { show(days) + "." } else { "" }
+    let tail = if size % 1000 > 0 { "." + fraction } else { "" }
+    return minus + dayPart + two(hours) + ":" + clock + tail
+  }
+  if given == "g" {
+    let dayPart = if days > 0 { show(days) + ":" } else { "" }
+    let trimmed = Text.dropWhileEnd(fraction, |character: Char| character == '0')
+    let tail = if trimmed.isEmpty() { "" } else { "." + trimmed }
+    return minus + dayPart + show(hours) + ":" + clock + tail
+  }
+  if given == "G" { return minus + show(days) + ":" + two(hours) + ":" + clock + "." + fraction }
+  renderSpan(days, hours, minutes, seconds, fraction, given)
+}
+
+/// Two-digit text of a number.
+fn two(value: Int) -> Str { Text.padLeft(show(value), 2, "0") }
+
+/// The pattern's specifiers replaced by the timestamp's local fields.
+fn render(moment: &Log.Timestamp, pattern: Str) -> Str {
+  let local = moment.millis + moment.offset * MINUTE
+  let parts = Calendar.partsOf(local)
+  let characters = pattern.chars()
+  var out: Array[Str] = []
+  var index = 0
+  while index < characters.length() {
+    let character = characters[index]
+    let count = runOf(&characters, index)
+    if character == '\'' || character == '"' {
+      let end = closing(&characters, index + 1, character)
+      out = out.push(pattern.slice(index + 1, end))
+      index = end + 1
+    } else if character == '\\' || character == '%' {
+      if character == '\\' { out = out.push(pattern.slice(index + 1, index + 2)) }
+      index = index + if character == '\\' { 2 } else { 1 }
+    } else {
+      out = out.push(field(character, count, moment, &parts, local))
+      index = index + (if isSpecifier(character) { count } else { 1 })
+    }
+  }
+  out.join("")
+}
+
+/// The number of times the character at `index` repeats from there.
+fn runOf(characters: &Array[Char], index: Int) -> Int {
+  var end = index
+  while end < characters.length() && characters[end] == characters[index] { end = end + 1 }
+  end - index
+}
+
+/// The index of the quote closing a literal, or the end of the pattern.
+fn closing(characters: &Array[Char], from: Int, quote: Char) -> Int {
+  var end = from
+  while end < characters.length() && characters[end] != quote { end = end + 1 }
+  end
+}
+
+/// Whether a character is a timestamp specifier rather than literal text.
+fn isSpecifier(character: Char) -> Bool { "dfFghHKmMstyz".contains(character.toText()) }
+
+/// One specifier of `count` repetitions rendered from the local fields.
+fn field(character: Char, count: Int, moment: &Log.Timestamp, parts: &Calendar.Parts, local: Int) -> Str {
+  let pair = Math.min(count, 2)
+  match character {
+    case 'y' => if count <= 2 { padded(parts.year % 100, count) } else { padded(parts.year, count) }
+    case 'M' => named(parts.month, count, &MONTHS, &MONTHS_FULL, parts.month - 1)
+    case 'd' => named(parts.day, count, &WEEKDAYS, &WEEKDAYS_FULL, Calendar.weekdayOf(local))
+    case 'H' => padded(parts.hour, pair)
+    case 'h' => padded(twelveHour(parts.hour), pair)
+    case 'm' => padded(parts.minute, pair)
+    case 's' => padded(parts.second, pair)
+    case 'f' => fractionOf(parts.milli, count, false)
+    case 'F' => fractionOf(parts.milli, count, true)
+    case 't' => (if parts.hour < 12 { "AM" } else { "PM" }).take(pair)
+    case 'z' => offsetOf(moment.offset, count)
+    case 'K' => offsetOf(moment.offset, 3)
+    case 'g' => "A.D."
+    case _ => character.toText()
+  }
+}
+
+/// A number padded with zeros to a width.
+fn padded(value: Int, width: Int) -> Str { Text.padLeft(show(value), width, "0") }
+
+/// The hour on a twelve-hour clock.
+fn twelveHour(hour: Int) -> Int {
+  let wrapped = hour % 12
+  if wrapped == 0 { 12 } else { wrapped }
+}
+
+/// A day or month as a number for one or two repetitions, abbreviated for three, and full for more.
+fn named(value: Int, count: Int, short: &Array[Str], full: &Array[Str], position: Int) -> Str {
+  if count <= 2 { return padded(value, count) }
+  if count == 3 { return short[position] }
+  full[position]
+}
+
+/// Up to seven fraction-of-second digits from milliseconds; `F` drops trailing zeros.
+fn fractionOf(milli: Int, count: Int, trimmed: Bool) -> Str {
+  let digits = (Text.padLeft(show(milli), 3, "0") + "0000").take(Math.min(count, 7))
+  if trimmed { Text.dropWhileEnd(digits, |character: Char| character == '0') } else { digits }
+}
+
+/// The offset as `+2` for one repetition, `+02` for two, and `+02:00` for more.
+fn offsetOf(offset: Int, count: Int) -> Str {
+  let mark = if offset < 0 { "-" } else { "+" }
+  let size = Math.abs(offset)
+  if count == 1 { return mark + show(size / 60) }
+  if count == 2 { return mark + two(size / 60) }
+  mark + two(size / 60) + ":" + two(size % 60)
+}
+
+/// A custom duration pattern rendered from its fields.
+fn renderSpan(days: Int, hours: Int, minutes: Int, seconds: Int, fraction: Str, pattern: Str) -> Str {
+  let characters = pattern.chars()
+  var out: Array[Str] = []
+  var index = 0
+  while index < characters.length() {
+    let character = characters[index]
+    let count = runOf(&characters, index)
+    if character == '\'' || character == '"' {
+      let end = closing(&characters, index + 1, character)
+      out = out.push(pattern.slice(index + 1, end))
+      index = end + 1
+    } else if character == '\\' {
+      out = out.push(pattern.slice(index + 1, index + 2))
+      index = index + 2
+    } else {
+      let pair = Math.min(count, 2)
+      let digits = fraction.take(Math.min(count, 7))
+      let (text, used) = match character {
+        case 'd' => (padded(days, count), count)
+        case 'h' => (padded(hours, pair), count)
+        case 'm' => (padded(minutes, pair), count)
+        case 's' => (padded(seconds, pair), count)
+        case 'f' => (digits, count)
+        case 'F' => (Text.dropWhileEnd(digits, |digit: Char| digit == '0'), count)
+        case _ => (character.toText(), 1)
+      }
+      out = out.push(text)
+      index = index + used
+    }
+  }
+  out.join("")
+}

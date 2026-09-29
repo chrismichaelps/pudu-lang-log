@@ -1,0 +1,35 @@
+/** @Log.Formatting.Reader.Module — events read back from compact JSON */
+module PuduLangLog.Formatting.Reader
+
+import Std.Io as Io
+import PuduLangLog.Domain.Clef as Clef
+import PuduLangLog as Log
+
+/// The event one line of compact JSON describes, as `Compact.compact` or `Compact.rendered` wrote
+/// it, or why the line cannot be read.
+export fn readLine(text: Str) -> Result[Log.Event, Str] { Clef.line(text) }
+
+/// Every event of newline-delimited compact JSON, skipping blank lines; the first unreadable line
+/// fails the whole text and is named by its number, counting from one.
+export fn readAll(text: Str) -> Result[Array[Log.Event], Str] {
+  var events: Array[Log.Event] = []
+  var number = 0
+  for written in text.split("\n") {
+    number = number + 1
+    if !written.trim().isEmpty() {
+      match Clef.line(written) {
+        case Ok(event) => { events = events.push(event) }
+        case Err(problem) => { return Err("Line " + show(number) + ": " + problem) }
+      }
+    }
+  }
+  Ok(events)
+}
+
+/// Every event of a file of newline-delimited compact JSON.
+export fn readFile(path: Str) -> Result[Array[Log.Event], Str] {
+  match Io.read(path) {
+    case Ok(text) => readAll(text)
+    case Err(problem) => Err("Cannot read `" + path + "`: " + show(problem))
+  }
+}

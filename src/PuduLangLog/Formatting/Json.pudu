@@ -1,0 +1,58 @@
+/** @Log.Formatting.Json.Formatter — events as JSON documents */
+module PuduLangLog.Formatting.Json
+
+import Std.Option as Option
+import PuduLangLog.Domain.Dates as Dates
+import PuduLangLog.Domain.Display as Display
+import PuduLangLog.Domain.Json as Json
+import PuduLangLog.Domain.Levels as Levels
+import PuduLangLog as Log
+
+/** @Log.Formatting.Json.Options — message rendering and line ending */
+export type Options = { renderMessage: Bool, closingDelimiter: Str }
+
+/// The name the plain JSON formatter gives a structure's type tag.
+const TYPE_TAG: Str = "_typeTag"
+
+/// The template only, each document ending in a line break.
+export fn defaults() -> Options { Options{renderMessage: false, closingDelimiter: "\n"} }
+
+/// A formatter writing each event as one JSON document of `Timestamp`, `Level`, `MessageTemplate`,
+/// optionally `RenderedMessage`, `TraceId`, `SpanId`, `Exception`, `Properties`, and the
+/// `Renderings` of formatted holes grouped by property.
+export fn formatter(options: Options) -> Log.Formatter {
+  fn(event: &Log.Event) -> Str {
+    var members = [
+      "\"Timestamp\":" + Json.quote(Dates.roundTrip(&event.timestamp)),
+      "\"Level\":" + Json.quote(Levels.name(event.level)),
+      "\"MessageTemplate\":" + Json.quote(event.template.text)
+    ]
+    if options.renderMessage { members = members.push("\"RenderedMessage\":" + Json.quote(Display.plain(&Display.message(&event.template, &event.properties, &None)))) }
+    if let Some(trace) = event.traceId { members = members.push("\"TraceId\":" + Json.quote(trace)) }
+    if let Some(span) = event.spanId { members = members.push("\"SpanId\":" + Json.quote(span)) }
+    if let Some(problem) = event.failure { members = members.push("\"Exception\":" + Json.quote(Display.failure(&problem))) }
+    if !event.properties.isEmpty() {
+      let properties = event.properties.map(|property: Log.Property| Json.quote(property.name) + ":" + Json.value(&property.value, &Some(TYPE_TAG)))
+      members = members.push("\"Properties\":\{" + properties.join(",") + "\}")
+    }
+    let renderings = renderingsOf(event)
+    if !renderings.isEmpty() { members = members.push("\"Renderings\":\{" + renderings.join(",") + "\}") }
+    "\{" + members.join(",") + "\}" + options.closingDelimiter
+  }
+}
+
+/// Each formatted hole's rendering, grouped by property name in order of first appearance.
+fn renderingsOf(event: &Log.Event) -> Array[Str] {
+  let formatted = event.template.holes.filter(|hole: Log.Hole| hole.format != None)
+  var names: Array[Str] = []
+  for hole in formatted {
+    if !names.contains(hole.name) { names = names.push(hole.name) }
+  }
+  names.map(|name: Str| {
+      let entries = formatted.filter(|hole: Log.Hole| hole.name == name).map(|hole: Log.Hole| {
+          let rendering = Display.plain(&Display.hole(&hole, &event.properties, true, false))
+          "\{\"Format\":" + Json.quote(Option.unwrapOr(hole.format, "")) + ",\"Rendering\":" + Json.quote(rendering) + "\}"
+        })
+      Json.quote(name) + ":[" + entries.join(",") + "]"
+    })
+}

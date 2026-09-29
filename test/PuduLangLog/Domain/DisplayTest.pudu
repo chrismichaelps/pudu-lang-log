@@ -1,0 +1,72 @@
+/** @Test.Domain.Display.Suite — display text of values, messages, and failures */
+module PuduLangLog.Domain.DisplayTest
+
+import Std.Io as Io
+import Std.Test as Test
+import PuduLangLog.Domain.Display as Display
+import PuduLangLog.Domain.Parser as Parser
+import PuduLangLog.Domain.Properties as Properties
+import PuduLangLog as Log
+
+/// A text scalar value.
+fn text(held: Str) -> Log.Value { Log.Scalar(Log.Text(held)) }
+
+/// An integer scalar value.
+fn int(held: Int) -> Log.Value { Log.Scalar(Log.Integer(held)) }
+
+/// A value's display text under a format.
+fn shown(held: Log.Value, format: Option[Str]) -> Str { Display.plain(&Display.value(&held, &format)) }
+
+/// A template rendered with properties under a message format.
+fn rendered(template: Str, properties: Array[Log.Property], format: Option[Str]) -> Str {
+  Display.plain(&Display.message(&Parser.parse(template), &properties, &format))
+}
+
+/// A property.
+fn property(name: Str, held: Log.Value) -> Log.Property { Log.Property{name: name, value: held} }
+
+/// Runs the suite.
+fn main() -> Int {
+  let user = Log.Structure(Log.Structure{tag: Some("User"), properties: [property("Name", text("Ada")), property("Tags", Log.Sequence([text("x")]))]})
+  let props = [property("User", text("Ada")), property("Count", int(3)), property("Price", Log.Scalar(Log.Real(2.5))), property("Account", user)]
+  let failure = Log.Failure{kind: "IoError", message: "disk full", trace: ["Store.save", "Main.main"], causes: [Log.Failure{kind: "Quota", message: "", trace: [], causes: []}]}
+  let checks = Test.suite("Domain.Display", &[
+      Test.equals("scalars", &[shown(Log.Scalar(Log.Null), None), shown(Log.Scalar(Log.Boolean(false)), None), shown(int(-7), None), shown(Log.Scalar(Log.Exact(1.50d)), None), shown(Log.Scalar(Log.Real(1.0e20)), None)], &["null", "false", "-7", "1.50", "1E+20"]),
+      Test.equals("text is quoted with inner quotes escaped", &shown(text("say \"hi\""), None), &"\"say \\\"hi\\\"\""),
+      Test.equals("the literal format drops quotes", &shown(text("plain"), Some("l")), &"plain"),
+      Test.equals("number formats apply", &(shown(int(5), Some("000")), shown(Log.Scalar(Log.Real(2.345)), Some("0.00")), shown(Log.Scalar(Log.Exact(1234d)), Some("N0"))), &("005", "2.35", "1,234")),
+      Test.equals("an unknown number format falls back", &shown(int(5), Some("Q")), &"5"),
+      Test.equals("time formats apply", &(shown(Log.Scalar(Log.Moment(Log.Timestamp{millis: 0, offset: 0})), Some("yyyy")), shown(Log.Scalar(Log.Span(61000)), None)), &("1970", "00:01:01")),
+      Test.equals("sequences pass their format to elements", &shown(Log.Sequence([int(1), int(2)]), Some("00")), &"[01, 02]"),
+      Test.equals("empty sequences", &shown(Log.Sequence([]), None), &"[]"),
+      Test.equals("structures", &shown(user, None), &"User \{ Name: \"Ada\", Tags: [\"x\"] \}"),
+      Test.equals("untagged and empty structures", &(shown(Log.Structure(Log.Structure{tag: None, properties: [property("A", int(1))]}), None), shown(Log.Structure(Log.Structure{tag: None, properties: []}), None)), &("\{ A: 1 \}", "\{ \}")),
+      Test.equals("dictionaries", &shown(Log.Dictionary([Log.Entry{key: Log.Text("a"), value: int(1)}, Log.Entry{key: Log.Integer(2), value: text("b")}]), None), &"[(\"a\": 1), (2: \"b\")]"),
+      Test.equals("empty dictionaries", &shown(Log.Dictionary([]), None), &"[]"),
+      Test.equals("a message with its values", &rendered("\{User\} has \{Count\} items", props, None), &"\"Ada\" has 3 items"),
+      Test.equals("the literal message format", &rendered("\{User\} has \{Count\} items", props, Some("l")), &"Ada has 3 items"),
+      Test.equals("the JSON message format", &rendered("\{User\} owns \{Account\}", props, Some("j")), &"\"Ada\" owns \{\"Name\":\"Ada\",\"Tags\":[\"x\"],\"$type\":\"User\"\}"),
+      Test.equals("literal and JSON together", &rendered("\{User\} owns \{Account\}", props, Some("lj")), &"Ada owns \{\"Name\":\"Ada\",\"Tags\":[\"x\"],\"$type\":\"User\"\}"),
+      Test.equals("a hole's own format wins over JSON", &rendered("\{Price:0.00\}", props, Some("j")), &"2.50"),
+      Test.equals("a missing property keeps its raw text", &rendered("\{Missing,5:u\} and \{Count\}", props, None), &"\{Missing,5:u\} and 3"),
+      Test.equals("alignment pads rendered values", &(rendered("[\{Count,3\}]", props, None), rendered("[\{Count,-3\}]", props, None), rendered("[\{User,2\}]", props, None)), &("[  3]", "[3  ]", "[\"Ada\"]")),
+      Test.equals("literal text keeps unescaped braces", &rendered("\{\{x\}\} \{Count\}", props, None), &"\{x\} 3"),
+      Test.equals("styles mark each kind", &Display.message(&Parser.parse("n=\{Count\} \{Nope\}"), &props, &None).map(|piece: Display.Piece| piece.style), &[Display.Plain, Display.NumberStyle, Display.Plain, Display.Invalid]),
+      Test.equals("structure styles", &Display.value(&user, &None).map(|piece: Display.Piece| piece.style), &[Display.NameStyle, Display.Tertiary, Display.NameStyle, Display.Tertiary, Display.StringStyle, Display.Tertiary, Display.NameStyle, Display.Tertiary, Display.Tertiary, Display.StringStyle, Display.Tertiary, Display.Tertiary]),
+      Test.equals("text already as wide as its alignment gains no padding piece", &Display.aligned(&[Display.Piece{style: Display.NumberStyle, text: "12"}], &Some(Log.Alignment{left: true, width: 2})), &[Display.Piece{style: Display.NumberStyle, text: "12"}]),
+      Test.equals("left padding follows the value", &Display.aligned(&[Display.Piece{style: Display.NumberStyle, text: "3"}], &Some(Log.Alignment{left: true, width: 2})), &[Display.Piece{style: Display.NumberStyle, text: "3"}, Display.Piece{style: Display.Plain, text: " "}]),
+      Test.equals("failures with trace and causes", &Display.failure(&failure), &"IoError: disk full\n   at Store.save\n   at Main.main\n ---> Quota"),
+      Test.equals("property lookup", &(Properties.find(&props, "Count"), Properties.find(&props, "None")), &(Some(int(3)), None)),
+      Test.equals("put replaces in place", &Properties.put(&[property("A", int(1)), property("B", int(2))], "A", int(9)), &[property("A", int(9)), property("B", int(2))]),
+      Test.equals("put adds at the end", &Properties.put(&[property("A", int(1))], "B", int(2)), &[property("A", int(1)), property("B", int(2))]),
+      Test.equals("putIfAbsent keeps an existing value", &Properties.putIfAbsent(&[property("A", int(1))], "A", int(2)), &[property("A", int(1))]),
+      Test.equals("putIfAbsent adds a new value", &Properties.putIfAbsent(&[property("A", int(1))], "B", int(2)), &[property("A", int(1)), property("B", int(2))]),
+      Test.equals("remove", &Properties.remove(&[property("A", int(1)), property("B", int(2))], "A"), &[property("B", int(2))]),
+      Test.that("has", Properties.has(&props, "User") && !Properties.has(&props, "user"))
+    ])
+  let ran = Test.run(&checks)
+  for problem in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(problem)
+  }
+  Test.report(&ran)
+}

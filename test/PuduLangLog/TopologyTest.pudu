@@ -1,0 +1,193 @@
+/** @Test.Topology.Suite — sink wrappers, sub-loggers, enrichers, filters, and lifecycle */
+module PuduLangLog.TopologyTest
+
+import Std.Io as Io
+import Std.Sync as Sync
+import Std.Test as Test
+import PuduLangLog.Clock as Clock
+import PuduLangLog.Configuration as Configuration
+import PuduLangLog.Context as Context
+import PuduLangLog.Enricher as Enricher
+import PuduLangLog.Event as Event
+import PuduLangLog.Failure as Failure
+import PuduLangLog.Filter as Filter
+import PuduLangLog.LevelSwitch as LevelSwitch
+import PuduLangLog as Log
+import PuduLangLog.Logger as Logger
+import PuduLangLog.Sink as Sink
+import PuduLangLog.Sinks.Memory as Memory
+import PuduLangLog.Value as Value
+
+/// The moment every event in this suite carries.
+const NOW: Log.Timestamp = Log.Timestamp{millis: 0, offset: 0}
+
+/// A configuration with a fixed clock.
+fn base() -> Configuration.Configuration { Configuration.create().clock(Clock.fixed(NOW)) }
+
+/// A sink that always fails.
+fn broken() -> Sink.Sink { Sink.of(fn(_event: &Log.Event) -> Result[(), Str] { Err("disk full") }) }
+
+/// A counter held in a cell.
+fn counter() -> Sync.Cell[Int] { Sync.cell(0) }
+
+/// The counter's value.
+fn countOf(cell: &Sync.Cell[Int]) -> Int {
+  match Sync.get(cell) {
+    case Ok(value) => value
+    case Err(_) => -1
+  }
+}
+
+/// Adds one to a counter.
+fn bump(cell: &Sync.Cell[Int]) -> () {
+  let _stored = Sync.set(cell, countOf(cell) + 1)
+}
+
+/// Runs the suite.
+fn main() -> Int {
+  let all = Memory.create()
+  let errors = Memory.create()
+  let when = Memory.create()
+  let layered = base().minimumLevel(Log.Debug).writeTo(Memory.sink(&all)).writeToAtLeast(Memory.sink(&errors), Log.Error).writeToWhen(Filter.withProperty("Audit"), Memory.sink(&when)).createLogger()
+  layered.debug("d", [])
+  layered.error("e", [])
+  layered.forContext("Audit", Value.bool(true)).information("audited", [])
+
+  let sinkSwitch = LevelSwitch.create(Log.Warning)
+  let controlled = Memory.create()
+  let switched = base().writeToControlled(Memory.sink(&controlled), &sinkSwitch).createLogger()
+  switched.information("quiet", [])
+  LevelSwitch.set(&sinkSwitch, Log.Information)
+  switched.information("heard", [])
+
+  let parent = Memory.create()
+  let child = Memory.create()
+  let subLogger = Configuration.nested().enrichWithProperty("Child", Value.bool(true)).filterExcluding(Filter.fromSource("App.Secret")).writeTo(Memory.sink(&child)).createLogger()
+  let topLevel = base().writeTo(Memory.sink(&parent)).writeToLogger(&subLogger).createLogger()
+  topLevel.information("shared", [])
+  topLevel.forSource("App.Secret").information("secret", [])
+
+  let survivors = Memory.create()
+  let audits = Memory.create()
+  let audited = base().writeTo(broken()).writeTo(Memory.sink(&survivors)).auditTo(Memory.sink(&audits)).createLogger()
+  let normal = audited.tryWrite(Log.Information, None, "kept", [])
+  let failingAudit = base().auditTo(broken()).auditTo(Memory.sink(&audits)).createLogger()
+  let refused = failingAudit.tryWrite(Log.Information, None, "refused", [])
+
+  let fallback = Memory.create()
+  let chained = base().writeToFallbackChain([broken(), Memory.sink(&fallback)]).createLogger()
+  chained.information("fell back", [])
+  let reports = counter()
+  let fallible = base().writeToFallible(broken(), fn(report: &Sink.Report) -> () {
+      if report.kind == Sink.Permanent && report.events.length() == 1 { bump(&reports) }
+    }).createLogger()
+  fallible.information("lost", [])
+
+  let enriched = Memory.create()
+  let enrichers = base().minimumLevel(Log.Verbose).writeTo(Memory.sink(&enriched)).enrichWith(Enricher.atLevel(Log.Error, Enricher.property("Alert", Value.bool(true)))).enrichWith(Enricher.when(Filter.withProperty("User"), Enricher.computed("UserLength", fn(event: &Log.Event) -> Log.Value {
+          match Event.property(event, "User") {
+            case Some(Log.Scalar(Log.Text(name))) => Value.int(name.length())
+            case _ => Value.nothing()
+          }
+        }, false))).enrichWith(Enricher.from(fn(event: Log.Event) -> Log.Event { Event.withoutProperty(&event, "Secret") })).enrichWith(Enricher.destructured("Build", Value.structure("Build", [("Number", Value.int(42))]))).createLogger()
+  enrichers.error("boom \{User\} \{Secret\}", [Value.text("ada"), Value.text("hunter2")])
+  enrichers.verbose("fine", [])
+  let enrichedFirst = Memory.events(&enriched)[0]
+
+  let filtered = Memory.create()
+  let filtering = base().writeTo(Memory.sink(&filtered)).filterIncludingOnly(Filter.anyOf([Filter.atLeast(Log.Warning), Filter.withPropertyValue("Keep", Value.bool(true))])).filterExcluding(Filter.withPropertyWhere("Size", fn(held: &Log.Value) -> Bool { held == &Value.int(0) })).createLogger()
+  filtering.information("dropped", [])
+  filtering.information("kept \{Keep\}", [Value.bool(true)])
+  filtering.warning("warned \{Size\}", [Value.int(1)])
+  filtering.warning("empty \{Size\}", [Value.int(0)])
+
+  let ambient = Context.create()
+  let ambientMemory = Memory.create()
+  let ambientLogger = base().writeTo(Memory.sink(&ambientMemory)).enrichWith(Context.enricher(&ambient)).createLogger()
+  let outer = Context.pushProperty(&ambient, "Request", Value.text("r1"))
+  let inner = Context.pushProperty(&ambient, "Request", Value.text("r2"))
+  ambientLogger.information("inner", [])
+  Context.restore(&ambient, inner)
+  ambientLogger.information("outer", [])
+  let copy = Context.clone(&ambient)
+  Context.restore(&ambient, outer)
+  let answered = Context.using(&ambient, "Scope", Value.int(1), fn() -> Int {
+      ambientLogger.information("scoped", [])
+      5
+    })
+  ambientLogger.information("bare", [])
+  let _cloned = Context.pushDestructured(&copy, "Extra", Value.int(9))
+  let suspended = Context.suspend(&copy)
+  let emptied = Context.pushProperty(&ambient, "Temporary", Value.int(1))
+  Context.reset(&ambient)
+  ambientLogger.information("reset", [])
+  let ambientEvents = Memory.events(&ambientMemory)
+
+  let lifecycle = counter()
+  let lifecycleSink = Sink.Sink{..Sink.none(), flush: fn() -> () { bump(&lifecycle) }, close: fn() -> () { bump(&lifecycle) }}
+  let closing = base().writeTo(lifecycleSink).createLogger()
+  Logger.close(&closing)
+
+  let first = Memory.create()
+  let second = Memory.create()
+  let reloadable = Logger.reloadable(Configuration.pipelineOf(&base().writeTo(Memory.sink(&first))))
+  let derived = reloadable.forContext("Derived", Value.bool(true))
+  derived.information("one", [])
+  let reloaded = Logger.reload(&reloadable, Configuration.pipelineOf(&base().writeTo(Memory.sink(&second))))
+  derived.information("two", [])
+
+  let traced = Memory.create()
+  let tracing = base().writeTo(Memory.sink(&traced)).createLogger().withTrace("abc", "def")
+  tracing.writeFailure(Log.Error, Failure.of("IoError", "full"), "failed", [])
+  let manual = Event.create(NOW, Log.Debug, "manual", [])
+  let dropped = tracing.emit(manual)
+  let accepted = tracing.emit(Log.Event{..manual, level: Log.Warning})
+  let (template, bound) = tracing.bindTemplate("\{A\}", [Value.int(1)])
+
+  let destructured = Memory.create()
+  let destructuring = base().writeTo(Memory.sink(&destructured)).destructureByTransforming("Card", fn(_held: Log.Value) -> Log.Value { Value.structure("Card", [("Last4", Value.text("1234"))]) }).destructureAsScalar("Token").maximumStringLength(4).maximumCollectionCount(2).maximumDepth(3).destructureWithRule(fn(held: &Log.Value) -> Option[Log.Value] { if held == &Value.object([]) { Some(Value.text("empty")) } else { None } }).createLogger()
+  destructuring.information("\{@Card\} \{@Token\} \{Name\} \{List\} \{@Nothing\}", [Value.structure("Card", [("Number", Value.text("4111111111111111"))]), Value.structure("Token", []), Value.text("abcdef"), Value.list([Value.int(1), Value.int(2), Value.int(3)]), Value.object([])])
+
+  let checks = Test.suite("Topology", &[
+      Test.equals("every sink sees what passes the pipeline", &Memory.messages(&all), &["d", "e", "audited"]),
+      Test.equals("a restricted sink sees its levels", &Memory.messages(&errors), &["e"]),
+      Test.equals("a conditional sink sees what its condition accepts", &Memory.messages(&when), &["audited"]),
+      Test.equals("a controlled sink follows its switch", &Memory.messages(&controlled), &["heard"]),
+      Test.equals("the parent sees every event", &Memory.messages(&parent), &["shared", "secret"]),
+      Test.equals("a sub-logger applies its own filters", &Memory.messages(&child), &["shared"]),
+      Test.equals("sub-logger enrichment stays in the sub-logger", &(Event.property(&Memory.events(&child)[0], "Child"), Event.property(&Memory.events(&parent)[0], "Child")), &(Some(Value.bool(true)), None)),
+      Test.equals("a failing sink does not stop the others", &Memory.messages(&survivors), &["kept"]),
+      Test.equals("a successful audit answers Ok", &normal, &Ok(())),
+      Test.equals("a failing audit sink is reported to the caller", &refused, &Err("disk full")),
+      Test.equals("every audit sink is still tried", &Memory.messages(&audits), &["kept", "refused"]),
+      Test.equals("a fallback chain uses the next sink", &Memory.messages(&fallback), &["fell back"]),
+      Test.equals("a fallible sink reports its failure", &countOf(&reports), &1),
+      Test.equals("level-gated enrichment", &(Event.property(&enrichedFirst, "Alert"), Event.property(&Memory.events(&enriched)[1], "Alert")), &(Some(Value.bool(true)), None)),
+      Test.equals("conditional computed enrichment", &Event.property(&enrichedFirst, "UserLength"), &Some(Value.int(3))),
+      Test.equals("an enricher can remove properties", &Event.property(&enrichedFirst, "Secret"), &None),
+      Test.equals("a destructured enricher keeps structure", &Event.property(&enrichedFirst, "Build"), &Some(Value.structure("Build", [("Number", Value.int(42))]))),
+      Test.equals("filters combine", &Memory.messages(&filtered), &["kept true", "warned 1"]),
+      Test.equals("the innermost ambient property wins", &Event.property(&ambientEvents[0], "Request"), &Some(Value.text("r2"))),
+      Test.equals("restoring a bookmark pops the inner push", &Event.property(&ambientEvents[1], "Request"), &Some(Value.text("r1"))),
+      Test.equals("using pushes for the action and answers its value", &(Event.property(&ambientEvents[2], "Scope"), answered, Event.property(&ambientEvents[3], "Scope")), &(Some(Value.int(1)), 5, None)),
+      Test.equals("a restored outer bookmark empties the stack", &ambientEvents[3].properties, &[]),
+      Test.equals("reset empties the stack", &(ambientEvents[4].properties, emptied.frames.length()), &([], 0)),
+      Test.equals("a clone is independent", &(suspended.frames.length(), Context.enricher(&copy)(manual, &Configuration.create().policy).properties), &(2, [])),
+      Test.equals("close flushes and closes", &countOf(&lifecycle), &2),
+      Test.equals("a reload redirects derived loggers", &(Memory.messages(&first), Memory.messages(&second), reloaded), &(["one"], ["two"], true)),
+      Test.equals("a reloaded pipeline keeps the context", &Event.property(&Memory.events(&second)[0], "Derived"), &Some(Value.bool(true))),
+      Test.that("a fixed logger does not reload", !Logger.reload(&tracing, Configuration.pipelineOf(&base()))),
+      Test.equals("trace and span identifiers", &(Memory.events(&traced)[0].traceId, Memory.events(&traced)[0].spanId), &(Some("abc"), Some("def"))),
+      Test.equals("failures travel with the event", &Memory.events(&traced)[0].failure, &Some(Failure.of("IoError", "full"))),
+      Test.equals("emit checks the level", &(dropped, accepted, Memory.messages(&traced)), &(Ok(()), Ok(()), ["failed", "manual"])),
+      Test.equals("templates bind without writing", &(template.text, bound), &("\{A\}", [Value.property("A", Value.int(1))])),
+      Test.equals("properties bind without writing", &(tracing.bindProperty("X", Value.object([]), false), tracing.bindProperty(" ", Value.int(1), false)), &(Some(Value.property("X", Value.text("\{ \}"))), None)),
+      Test.equals("configured destructuring", &Memory.events(&destructured)[0].properties, &[Value.property("Card", Value.structure("Card", [("Last4", Value.text("1234"))])), Value.property("Token", Value.text("Tok…")), Value.property("Name", Value.text("abc…")), Value.property("List", Value.list([Value.int(1), Value.int(2)])), Value.property("Nothing", Value.text("emp…"))]),
+      Test.that("a silent logger writes nothing", !Logger.none().isEnabled(Log.Fatal))
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

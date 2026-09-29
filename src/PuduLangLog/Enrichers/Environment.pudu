@@ -1,0 +1,104 @@
+/** @Log.Enrichers.Environment.Module — machine, user, process, and failure properties */
+module PuduLangLog.Enrichers.Environment
+
+import Std.Env as Env
+import Std.List as List
+import Std.Option as Option
+import Std.Process as Process
+import Std.Result as Result
+import PuduLangLog.Enricher as Enricher
+import PuduLangLog as Log
+
+/// The variable `environmentName` reads when not told otherwise.
+export const ENVIRONMENT_VARIABLE: Str = "PUDU_ENVIRONMENT"
+
+/// The environment name used when the variable is not set.
+const PRODUCTION: Str = "Production"
+
+/// Adds `MachineName`: the `HOSTNAME` or `COMPUTERNAME` variable, or the `hostname` command's answer,
+/// read once.
+export fn machineName() -> Enricher.Enricher {
+  let name = match firstVariable(["HOSTNAME", "COMPUTERNAME"]) {
+    case Some(found) => found
+    case None => Result.unwrapOr(Process.output("hostname", &[]), "").trim()
+  }
+  Enricher.property("MachineName", Log.Scalar(Log.Text(name)))
+}
+
+/// Adds `EnvironmentUserName`: the `USER` or `USERNAME` variable, read once.
+export fn environmentUserName() -> Enricher.Enricher {
+  let name = match firstVariable(["USER", "USERNAME"]) {
+    case Some(found) => found
+    case None => ""
+  }
+  Enricher.property("EnvironmentUserName", Log.Scalar(Log.Text(name)))
+}
+
+/// Adds `EnvironmentName` from a variable, `Production` when it is unset or empty.
+export fn environmentName(variable: Str) -> Enricher.Enricher {
+  let name = match firstVariable([variable]) {
+    case Some(found) => found
+    case None => PRODUCTION
+  }
+  Enricher.property("EnvironmentName", Log.Scalar(Log.Text(name)))
+}
+
+/// Adds `ProcessId`, read once from the parent of a short-lived shell.
+export fn processId() -> Enricher.Enricher {
+  let answer = Result.unwrapOr(Process.output("sh", &["-c", "echo $PPID"]), "").trim()
+  let held = match answer.toInt() {
+    case Some(number) => Log.Scalar(Log.Integer(number))
+    case None => Log.Scalar(Log.Null)
+  }
+  Enricher.property("ProcessId", held)
+}
+
+/// Adds `ProcessName`, the command name of the running program, read once.
+export fn processName() -> Enricher.Enricher {
+  let answer = Result.unwrapOr(Process.output("sh", &["-c", "ps -o comm= -p $PPID"]), "").trim()
+  let name = Option.unwrapOr(List.last(&answer.split("/")), answer)
+  Enricher.property("ProcessName", if name.isEmpty() { Log.Scalar(Log.Null) } else { Log.Scalar(Log.Text(name)) })
+}
+
+/// Adds a property named after an environment variable holding its value, read once; an unset
+/// variable adds nothing.
+export fn environmentVariable(variable: Str) -> Enricher.Enricher {
+  match Env.variable(variable) {
+    case Some(found) => Enricher.property(variable, Log.Scalar(Log.Text(found)))
+    case None => Enricher.all([])
+  }
+}
+
+/// Adds `FailureDetail`, a structure of the event's failure — `Kind`, `Message`, `Trace`, and
+/// `Causes` — for sinks that store properties but not failure text.
+export fn failureDetail() -> Enricher.Enricher {
+  Enricher.computed("FailureDetail", fn(event: &Log.Event) -> Log.Value {
+      match event.failure {
+        case Some(problem) => detailOf(&problem)
+        case None => Log.Scalar(Log.Null)
+      }
+    }, true)
+}
+
+/// A failure as a structure.
+fn detailOf(problem: &Log.Failure) -> Log.Value {
+  Log.Structure(Log.Structure {
+      tag: Some(problem.kind),
+      properties: [
+        Log.Property{name: "Kind", value: Log.Scalar(Log.Text(problem.kind))},
+        Log.Property{name: "Message", value: Log.Scalar(Log.Text(problem.message))},
+        Log.Property{name: "Trace", value: Log.Sequence(problem.trace.map(|line: Str| Log.Scalar(Log.Text(line))))},
+        Log.Property{name: "Causes", value: Log.Sequence(problem.causes.map(|cause: Log.Failure| detailOf(&cause)))}
+      ]
+    })
+}
+
+/// The first of the variables that is set and not empty.
+fn firstVariable(names: Array[Str]) -> Option[Str] {
+  for name in names {
+    if let Some(found) = Env.variable(name) {
+      if !found.trim().isEmpty() { return Some(found.trim()) }
+    }
+  }
+  None
+}

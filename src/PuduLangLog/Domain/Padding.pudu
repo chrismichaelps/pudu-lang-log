@@ -1,0 +1,29 @@
+/** @Log.Domain.Padding.Module — alignment padding and case formats */
+module PuduLangLog.Domain.Padding
+
+import Std.Math as Math
+import PuduLangLog as Log
+
+/// The text padded with spaces to the alignment's width, on the right for a left alignment and on
+/// the left otherwise; text already as wide is unchanged.
+export fn padded(text: Str, alignment: &Option[Log.Alignment]) -> Str {
+  match alignment {
+    case None => text
+    case Some(shape) => {
+      let missing = Math.max(0, shape.width - text.length())
+      if shape.left {
+        text + " ".repeat(missing)
+      } else {
+        " ".repeat(missing) + text
+      }
+    }
+  }
+}
+
+/// The text in upper case for format `u`, lower case for `w`, and unchanged otherwise.
+export fn cased(text: Str, format: &Option[Str]) -> Str {
+  match format {
+    case Some(given) => if given == "u" { text.toUpper() } else if given == "w" { text.toLower() } else { text }
+    case None => text
+  }
+}

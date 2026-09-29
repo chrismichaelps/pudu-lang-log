@@ -1,0 +1,13 @@
+/** @Log.Formatting.Text.Formatter — events as text through output templates */
+module PuduLangLog.Formatting.Text
+
+import PuduLangLog.Domain.Display as Display
+import PuduLangLog.Domain.Output as Output
+import PuduLangLog.Domain.Parser as Parser
+import PuduLangLog as Log
+
+/// A formatter writing each event through an output template, parsed once.
+export fn template(output: Str) -> Log.Formatter {
+  let parsed = Parser.parse(output)
+  fn(event: &Log.Event) -> Str { Display.plain(&Output.render(&parsed, event)) }
+}

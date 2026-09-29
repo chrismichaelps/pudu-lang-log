@@ -1,0 +1,51 @@
+/** @Test.Domain.Levels.Suite — level ranks, names, parsing, and monikers */
+module PuduLangLog.Domain.LevelsTest
+
+import Std.Io as Io
+import Std.Test as Test
+import PuduLangLog.Domain.Levels as Levels
+import PuduLangLog.Domain.Padding as Padding
+import PuduLangLog as Log
+
+/// The moniker of every level under one format.
+fn monikers(format: Str) -> Array[Str] {
+  Log.LEVELS.map(|level: Log.Level| Levels.moniker(level, &Some(format)))
+}
+
+/// Runs the suite.
+fn main() -> Int {
+  let checks = Test.suite("Domain.Levels", &[
+      Test.equals("ranks run from verbose to fatal", &Log.LEVELS.map(|level: Log.Level| Levels.rank(level)), &[0, 1, 2, 3, 4, 5]),
+      Test.equals("full names", &Log.LEVELS.map(|level: Log.Level| Levels.name(level)), &["Verbose", "Debug", "Information", "Warning", "Error", "Fatal"]),
+      Test.that("a level passes itself", Levels.passes(Log.Warning, Log.Warning)),
+      Test.that("a higher level passes", Levels.passes(Log.Error, Log.Warning)),
+      Test.that("a lower level does not pass", !Levels.passes(Log.Information, Log.Warning)),
+      Test.equals("the stricter of two levels", &(Levels.stricter(Log.Debug, Log.Error), Levels.stricter(Log.Fatal, Log.Verbose), Levels.stricter(Log.Warning, Log.Warning)), &(Log.Error, Log.Fatal, Log.Warning)),
+      Test.equals("names parse ignoring case and spaces", &(Levels.parse(" warning "), Levels.parse("FATAL"), Levels.parse("Information")), &(Some(Log.Warning), Some(Log.Fatal), Some(Log.Information))),
+      Test.equals("numbers parse", &(Levels.parse("0"), Levels.parse("5")), &(Some(Log.Verbose), Some(Log.Fatal))),
+      Test.equals("unknown names do not parse", &(Levels.parse("info"), Levels.parse("6"), Levels.parse("")), &(None, None, None)),
+      Test.equals("u3 monikers", &monikers("u3"), &["VRB", "DBG", "INF", "WRN", "ERR", "FTL"]),
+      Test.equals("w3 monikers", &monikers("w3"), &["vrb", "dbg", "inf", "wrn", "err", "ftl"]),
+      Test.equals("t4 monikers", &monikers("t4"), &["Verb", "Dbug", "Info", "Warn", "Eror", "Fatl"]),
+      Test.equals("u1 monikers", &monikers("u1"), &["V", "D", "I", "W", "E", "F"]),
+      Test.equals("a two-digit width shorter than a name", &monikers("u10"), &["VERBOSE", "DEBUG", "INFORMATIO", "WARNING", "ERROR", "FATAL"]),
+      Test.equals("two-digit widths", &monikers("t11"), &["Verbose", "Debug", "Information", "Warning", "Error", "Fatal"]),
+      Test.equals("a width past the name gives the name", &monikers("u9"), &["VERBOSE", "DEBUG", "INFORMATI", "WARNING", "ERROR", "FATAL"]),
+      Test.equals("width zero is empty", &monikers("u0"), &["", "", "", "", "", ""]),
+      Test.equals("a lone case letter cases the full name", &(Levels.moniker(Log.Warning, &Some("u")), Levels.moniker(Log.Warning, &Some("w"))), &("WARNING", "warning")),
+      Test.equals("no format gives the full name", &Levels.moniker(Log.Debug, &None), &"Debug"),
+      Test.equals("an unknown case letter gives the full name", &Levels.moniker(Log.Error, &Some("x3")), &"Error"),
+      Test.equals("a width that is not digits keeps the full name", &(Levels.moniker(Log.Error, &Some("uab")), Levels.moniker(Log.Error, &Some("u3x"))), &("Error", "Error")),
+      Test.equals("a format of four characters keeps the full name", &Levels.moniker(Log.Error, &Some("u123")), &"Error"),
+      Test.equals("left alignment pads on the right", &Padding.padded("ab", &Some(Log.Alignment{left: true, width: 5})), &"ab   "),
+      Test.equals("right alignment pads on the left", &Padding.padded("ab", &Some(Log.Alignment{left: false, width: 5})), &"   ab"),
+      Test.equals("wide text is not padded", &(Padding.padded("abcdef", &Some(Log.Alignment{left: false, width: 5})), Padding.padded("abcde", &Some(Log.Alignment{left: true, width: 5}))), &("abcdef", "abcde")),
+      Test.equals("no alignment leaves text", &Padding.padded("ab", &None), &"ab"),
+      Test.equals("case formats", &(Padding.cased("Ab", &Some("u")), Padding.cased("Ab", &Some("w")), Padding.cased("Ab", &Some("x")), Padding.cased("Ab", &None)), &("AB", "ab", "Ab", "Ab"))
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

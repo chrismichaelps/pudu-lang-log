@@ -1,0 +1,119 @@
+/** @Log.Sinks.Async.Wrapper — hands events to a sink on another thread */
+module PuduLangLog.Sinks.Async
+
+import Std.Channel as Channel
+import Std.Concurrent as Concurrent
+import Std.Sync as Sync
+import PuduLangLog as Log
+import PuduLangLog.SelfLog as SelfLog
+import PuduLangLog.Sink as Sink
+
+/** @Log.Sinks.Async.Options — queue size and behaviour when full */
+export type Options = { bufferSize: Int, blockWhenFull: Bool, selfLog: SelfLog.SelfLog }
+
+/** @Log.Sinks.Async.Queue — a running wrapper and its counters */
+export type Async = {
+  inner: Sink.Sink,
+  options: Options,
+  queue: Channel.Channel[Log.Event],
+  accepted: Sync.Counter,
+  written: Sync.Counter,
+  dropped: Sync.Counter,
+  listener: Sync.Cell[Option[fn(&Sink.Report) -> ()]],
+  worker: Option[Concurrent.Task]
+}
+
+/// How long `flush` waits between checks of the queue, in milliseconds.
+const POLL: Int = 1
+
+/// Ten thousand queued events, dropping new events when full, and a disabled self-log.
+export fn defaults() -> Options { Options{bufferSize: 10000, blockWhenFull: false, selfLog: SelfLog.create()} }
+
+/// Starts the thread that writes queued events to the inner sink.
+export fn start(inner: Sink.Sink, options: Options) -> Async {
+  let none: Option[fn(&Sink.Report) -> ()] = None
+  let base = Async{inner: inner, options: options, queue: Channel.channel(options.bufferSize), accepted: Sync.counter(0), written: Sync.counter(0), dropped: Sync.counter(0), listener: Sync.cell(none), worker: None}
+  match Concurrent.start(fn() -> () { drain(&base) }) {
+    case Ok(started) => Async{..base, worker: Some(started)}
+    case Err(_) => {
+      SelfLog.write(&options.selfLog, "The asynchronous sink could not start its thread; events are dropped")
+      base
+    }
+  }
+}
+
+/// Writes queued events until the queue is closed and empty.
+fn drain(queue: &Async) -> () {
+  loop {
+    match Channel.receive(&queue.queue) {
+      case Ok(Some(event)) => {
+        if let Err(problem) = (queue.inner.emit)(&event) { report(queue, problem, event) }
+        let _counted = Sync.increment(&queue.written, 1)
+      }
+      case _ => { return () }
+    }
+  }
+}
+
+/// Reports an inner sink's failure to the self-log and to the attached listener.
+fn report(queue: &Async, problem: Str, event: Log.Event) -> () {
+  SelfLog.write(&queue.options.selfLog, "The asynchronous sink could not write an event: " + problem)
+  if let Ok(Some(listener)) = Sync.get(&queue.listener) { listener(&Sink.Report{kind: Sink.Permanent, message: problem, events: [event]}) }
+}
+
+/// The sink that queues events for the thread. Flushing waits until every accepted event was
+/// written; closing also stops the thread.
+export fn sinkOf(queue: &Async) -> Sink.Sink {
+  let shared = *queue
+  Sink.Sink {
+    emit: fn(event: &Log.Event) -> Result[(), Str] { enqueue(&shared, event) },
+    flush: fn() -> () {
+      while count(&shared.written) < count(&shared.accepted) { let _slept = Concurrent.sleep(POLL) }
+      (shared.inner.flush)()
+    },
+    close: fn() -> () {
+      let _closed = Channel.close(&shared.queue)
+      if let Some(worker) = shared.worker { let _joined = Concurrent.join(&worker) }
+      (shared.inner.close)()
+    },
+    attach: fn(listener: Sink.Listener) -> () {
+      let _stored = Sync.set(&shared.listener, Some(listener))
+      (shared.inner.attach)(listener)
+    }
+  }
+}
+
+/// Queues an event, waiting for room when blocking and otherwise dropping it when the queue is full.
+fn enqueue(queue: &Async, event: &Log.Event) -> Result[(), Str] {
+  if !queue.options.blockWhenFull && pending(queue) >= queue.options.bufferSize {
+    let _counted = Sync.increment(&queue.dropped, 1)
+    SelfLog.write(&queue.options.selfLog, "The asynchronous sink's queue is full; an event was dropped")
+    return Ok(())
+  }
+  match Channel.send(&queue.queue, *event) {
+    case Ok(_) => {
+      let _counted = Sync.increment(&queue.accepted, 1)
+      Ok(())
+    }
+    case Err(_) => Err("the asynchronous sink is closed")
+  }
+}
+
+/// A counter's value.
+fn count(counter: &Sync.Counter) -> Int {
+  match Sync.count(counter) {
+    case Ok(value) => value
+    case Err(_) => 0
+  }
+}
+
+/// How many events wait in the queue.
+export fn pending(queue: &Async) -> Int {
+  match Channel.pending(&queue.queue) {
+    case Ok(value) => value
+    case Err(_) => 0
+  }
+}
+
+/// How many events were dropped because the queue was full.
+export fn dropped(queue: &Async) -> Int { count(&queue.dropped) }

@@ -1,0 +1,50 @@
+/** @Test.Domain.Json.Suite — JSON text of scalars and values */
+module PuduLangLog.Domain.JsonTest
+
+import Std.Bytes as Bytes
+import Std.Char as Char
+import Std.Io as Io
+import Std.Option as Option
+import Std.Test as Test
+import PuduLangLog.Domain.Json as Json
+import PuduLangLog as Log
+
+/// A text scalar value.
+fn text(held: Str) -> Log.Value { Log.Scalar(Log.Text(held)) }
+
+/// An integer scalar value.
+fn int(held: Int) -> Log.Value { Log.Scalar(Log.Integer(held)) }
+
+/// The character with a code point, as text.
+fn control(code: Int) -> Str { Option.unwrapOr(Char.fromCode(code), ' ').toText() }
+
+/// Runs the suite.
+fn main() -> Int {
+  let tag = Some("$type")
+  let user = Log.Structure(Log.Structure{tag: Some("User"), properties: [Log.Property{name: "Name", value: text("Ada")}, Log.Property{name: "Age", value: int(36)}]})
+  let checks = Test.suite("Domain.Json", &[
+      Test.equals("plain text is quoted", &Json.quote("abc"), &"\"abc\""),
+      Test.equals("quotes and backslashes are escaped", &Json.quote("a\"b\\c"), &"\"a\\\"b\\\\c\""),
+      Test.equals("line breaks and tabs are escaped", &Json.quote("a\nb\rc\td"), &"\"a\\nb\\rc\\td\""),
+      Test.equals("other control characters use code points", &Json.quote(control(1) + control(12) + control(31)), &"\"\\u0001\\f\\u001F\""),
+      Test.equals("characters beyond ASCII pass through", &Json.quote("héllo ✓"), &"\"héllo ✓\""),
+      Test.equals("scalars", &[Json.scalar(&Log.Null), Json.scalar(&Log.Boolean(true)), Json.scalar(&Log.Boolean(false)), Json.scalar(&Log.Integer(-42)), Json.scalar(&Log.Exact(12.50d)), Json.scalar(&Log.Real(0.25))], &["null", "true", "false", "-42", "12.50", "0.25"]),
+      Test.equals("large and small floats keep exponents", &(Json.scalar(&Log.Real(1.0e30)), Json.scalar(&Log.Real(1.0e-7))), &("1E+30", "1E-07")),
+      Test.equals("non-finite floats are quoted names", &(Json.scalar(&Log.Real(1.0 / 0.0)), Json.scalar(&Log.Real(0.0 / 0.0))), &("\"Infinity\"", "\"NaN\"")),
+      Test.equals("moments are round-trip text", &Json.scalar(&Log.Moment(Log.Timestamp{millis: 0, offset: 60})), &"\"1970-01-01T01:00:00.0000000+01:00\""),
+      Test.equals("spans are constant-format text", &Json.scalar(&Log.Span(1500)), &"\"00:00:01.5000000\""),
+      Test.equals("bytes are upper-case hexadecimal", &Json.scalar(&Log.Binary(Bytes.fromArray(&[0u8, 171u8, 255u8]))), &"\"00ABFF\""),
+      Test.equals("sequences", &Json.value(&Log.Sequence([int(1), text("two"), Log.Sequence([])]), &tag), &"[1,\"two\",[]]"),
+      Test.equals("structures carry their tag last", &Json.value(&user, &tag), &"\{\"Name\":\"Ada\",\"Age\":36,\"$type\":\"User\"\}"),
+      Test.equals("structures without a tag name drop the tag", &Json.value(&user, &None), &"\{\"Name\":\"Ada\",\"Age\":36\}"),
+      Test.equals("untagged structures", &Json.value(&Log.Structure(Log.Structure{tag: None, properties: []}), &tag), &"\{\}"),
+      Test.equals("dictionaries are keyed by text", &Json.value(&Log.Dictionary([Log.Entry{key: Log.Text("a"), value: int(1)}, Log.Entry{key: Log.Integer(2), value: int(2)}, Log.Entry{key: Log.Null, value: int(3)}, Log.Entry{key: Log.Boolean(true), value: int(4)}]), &tag), &"\{\"a\":1,\"2\":2,\"null\":3,\"true\":4\}"),
+      Test.equals("dictionary keys that are moments stay single strings", &Json.value(&Log.Dictionary([Log.Entry{key: Log.Moment(Log.Timestamp{millis: 0, offset: 0}), value: int(1)}]), &tag), &"\{\"1970-01-01T00:00:00.0000000+00:00\":1\}"),
+      Test.equals("empty bytes", &Json.hexOf(&Bytes.empty()), &"")
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

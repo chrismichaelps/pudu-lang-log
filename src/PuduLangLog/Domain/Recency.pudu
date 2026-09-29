@@ -1,0 +1,11 @@
+/** @Log.Domain.Recency.Module — keys ordered from least to most recently used */
+module PuduLangLog.Domain.Recency
+
+import Std.List as List
+import Std.Math as Math
+
+/// The keys with `key` moved to, or added at, the most recent end.
+export fn touch(keys: &Array[Str], key: Str) -> Array[Str] { keys.filter(|kept: Str| kept != key).push(key) }
+
+/// The least recent keys to retire so that at most `limit` remain; a negative limit counts as zero.
+export fn overflow(keys: &Array[Str], limit: Int) -> Array[Str] { List.take(keys, keys.length() - Math.max(0, limit)) }

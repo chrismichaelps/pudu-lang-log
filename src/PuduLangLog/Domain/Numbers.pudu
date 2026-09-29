@@ -1,0 +1,363 @@
+/** @Log.Domain.Numbers.Module — numeric format specifiers over exact digits */
+module PuduLangLog.Domain.Numbers
+
+import Std.Char as Char
+import Std.Decimal as Decimal
+import Std.List as List
+import Std.Math as Math
+import Std.Option as Option
+import Std.Text as Text
+
+/** @Log.Domain.Numbers.Digits — a number as sign, digits, and exponent */
+export type Digits = { negative: Bool, digits: Str, exponent: Int }
+
+/// Hexadecimal digits by value.
+const HEX: Str = "0123456789abcdef"
+
+/// The largest precision a standard format may carry.
+const MOST_PRECISION: Int = 99
+
+/// The digits of an exact number: `0.d1d2… × 10^exponent`, without leading or trailing zeros.
+/// Zero has no digits.
+export fn digitsOf(value: Decimal) -> Digits {
+  let text = Decimal.toText(value)
+  let negative = text.startsWith("-")
+  let unsigned = if negative { text.drop(1) } else { text }
+  let (whole, fraction) = Text.breakOn(unsigned, ".")
+  let all = whole + fraction.drop(1)
+  let leading = all.spanOf("0")
+  let trimmed = Text.dropWhileEnd(all.drop(leading), |character: Char| character == '0')
+  let exponent = if trimmed.isEmpty() { 0 } else { whole.length() - leading }
+  Digits{negative: negative && !trimmed.isEmpty(), digits: trimmed, exponent: exponent}
+}
+
+/// The digits of a float read through its shortest text, or `None` for infinities and NaN.
+export fn digitsOfReal(value: Float64) -> Option[Digits] {
+  let exact = show(value).toDecimal() ?
+  Some(digitsOf(exact))
+}
+
+/// The float in its shortest round-trip form: fixed notation for decimal exponents from -4 to 14,
+/// and `d.dddE+XX` outside them.
+export fn realText(value: Float64) -> Str {
+  match digitsOfReal(value) {
+    case Some(number) => general(&number, 17, 15, "E")
+    case None => show(value)
+  }
+}
+
+/// The integer under a format, or `None` when the format is not understood.
+export fn formatInteger(value: Int, format: Str) -> Option[Str] {
+  let (letter, precision) = match standard(format) {
+    case Some(parts) => parts
+    case None => { return custom(&digitsOf(Decimal.fromInt(value)), format) }
+  }
+  let lower = letter.toLower()
+  if lower == "d" {
+    let number = digitsOf(Decimal.fromInt(value))
+    let (text, _fraction) = fixed(&number, 0)
+    return Some(sign(&number, 0) + Text.padLeft(text, Option.unwrapOr(precision, 0), "0"))
+  }
+  if lower == "x" {
+    let text = hex(value)
+    let cased = if letter == "X" { text.toUpper() } else { text }
+    return Some(Text.padLeft(cased, Option.unwrapOr(precision, 0), "0"))
+  }
+  if lower == "r" || (lower == "g" && precision == None) { return Some(show(value)) }
+  formatStandard(&digitsOf(Decimal.fromInt(value)), letter, precision)
+}
+
+/// The exact number under a format, or `None` when the format is not understood.
+export fn formatExact(value: Decimal, format: Str) -> Option[Str] {
+  match standard(format) {
+    case Some((letter, precision)) => {
+      let lower = letter.toLower()
+      if lower == "r" || (lower == "g" && precision == None) { return Some(Decimal.toText(value)) }
+      formatStandard(&digitsOf(value), letter, precision)
+    }
+    case None => custom(&digitsOf(value), format)
+  }
+}
+
+/// The float under a format, or `None` when the format is not understood. Infinities and NaN
+/// render as their names under every format.
+export fn formatReal(value: Float64, format: Str) -> Option[Str] {
+  let number = match digitsOfReal(value) {
+    case Some(found) => found
+    case None => { return Some(show(value)) }
+  }
+  match standard(format) {
+    case Some((letter, precision)) => {
+      let lower = letter.toLower()
+      if lower == "r" || (lower == "g" && precision == None) { return Some(realText(value)) }
+      formatStandard(&number, letter, precision)
+    }
+    case None => custom(&number, format)
+  }
+}
+
+/// The letter and optional precision of a standard format: one letter and up to two digits.
+fn standard(format: Str) -> Option[(Str, Option[Int])] {
+  let letter = List.first(&format.chars()) ?
+  if !Char.isLetter(letter) || format.length() > 3 { return None }
+  let rest = format.drop(1)
+  if rest.isEmpty() { return Some((letter.toText(), None)) }
+  if !Text.allChars(rest, |character: Char| Char.isDigit(character)) { return None }
+  Some((letter.toText(), Text.countOf(rest)))
+}
+
+/// A standard numeric format other than `D`, `X`, and `R`.
+fn formatStandard(number: &Digits, letter: Str, precision: Option[Int]) -> Option[Str] {
+  let lower = letter.toLower()
+  let places = Option.unwrapOr(precision, 2)
+  if lower == "f" { return Some(fixedText(number, places, false)) }
+  if lower == "n" { return Some(fixedText(number, places, true)) }
+  if lower == "c" {
+    let (integer, fraction) = fixed(number, places)
+    return Some(sign(number, places) + "¤" + joined(grouped(integer), fraction))
+  }
+  if lower == "p" {
+    let scaled = Digits{..*number, exponent: number.exponent + 2}
+    return Some(fixedText(&scaled, places, true) + " %")
+  }
+  if lower == "e" { return Some(scientific(number, Option.unwrapOr(precision, 6) + 1, letter, 3, false)) }
+  if lower == "g" {
+    let count = Option.unwrapOr(precision, 15)
+    return Some(general(number, count, count, if letter == "G" { "E" } else { "e" }))
+  }
+  None
+}
+
+/// Fixed notation with a number of decimals, optionally grouped in thousands.
+fn fixedText(number: &Digits, places: Int, grouping: Bool) -> Str {
+  let (integer, fraction) = fixed(number, places)
+  sign(number, places) + joined(if grouping { grouped(integer) } else { integer }, fraction)
+}
+
+/// The integer digits and exactly `places` fraction digits of a number rounded half away from zero.
+export fn fixed(number: &Digits, places: Int) -> (Str, Str) {
+  let rounded = roundTo(number, number.exponent + places)
+  let integer = if rounded.exponent <= 0 { "0" } else { Text.padRight(rounded.digits.take(rounded.exponent), rounded.exponent, "0") }
+  let leading = "0".repeat(Math.max(0, 0 - rounded.exponent))
+  let fraction = Text.padRight(leading + rounded.digits.drop(Math.max(0, rounded.exponent)), places, "0").take(places)
+  (integer, fraction)
+}
+
+/// The number kept to `count` significant digits, rounding half away from zero.
+fn roundTo(number: &Digits, count: Int) -> Digits {
+  if count >= number.digits.length() { return *number }
+  if count < 0 { return digitsOf(Decimal.zero()) }
+  let kept = number.digits.take(count)
+  let next = Option.unwrapOr(Char.toDigit(number.digits.chars()[count]), 0)
+  if next < 5 { return trim(Digits{..*number, digits: kept}) }
+  let (carried, overflow) = increment(kept)
+  if overflow { return Digits{..*number, digits: "1", exponent: number.exponent + 1} }
+  trim(Digits{..*number, digits: carried})
+}
+
+/// The digits plus one in their last place, and whether the carry left the first place.
+fn increment(digits: Str) -> (Str, Bool) {
+  var characters = digits.chars()
+  var index = characters.length() - 1
+  while index >= 0 {
+    let digit = Option.unwrapOr(Char.toDigit(characters[index]), 0)
+    if digit < 9 {
+      characters = List.take(&characters, index).push(Option.unwrapOr(Char.fromDigit(digit + 1), '0')).concat(List.drop(&characters, index + 1))
+      return (characters.map(|character: Char| character.toText()).join(""), false)
+    }
+    characters = List.take(&characters, index).push('0').concat(List.drop(&characters, index + 1))
+    index = index - 1
+  }
+  ("", true)
+}
+
+/// The number without trailing zero digits; a number left without digits is zero.
+fn trim(number: Digits) -> Digits {
+  let digits = Text.dropWhileEnd(number.digits, |character: Char| character == '0')
+  if digits.isEmpty() { digitsOf(Decimal.zero()) } else { Digits{..number, digits: digits} }
+}
+
+/// A minus sign when the number is still negative after rounding to `places` decimals.
+fn sign(number: &Digits, places: Int) -> Str {
+  if number.negative && !roundTo(number, number.exponent + places).digits.isEmpty() { "-" } else { "" }
+}
+
+/// Integer digits with a comma between each group of three.
+fn grouped(integer: Str) -> Str {
+  var groups: Array[Str] = []
+  var rest = integer
+  while rest.length() > 3 {
+    groups = [rest.drop(rest.length() - 3)].concat(groups)
+    rest = rest.take(rest.length() - 3)
+  }
+  [rest].concat(groups).join(",")
+}
+
+/// Integer and fraction digits joined by a point, without the point when there is no fraction.
+fn joined(integer: Str, fraction: Str) -> Str {
+  if fraction.isEmpty() { integer } else { integer + "." + fraction }
+}
+
+/// Scientific notation with `count` significant digits and an exponent of at least `width` digits,
+/// trimming trailing fraction zeros when `trimmed`.
+fn scientific(number: &Digits, count: Int, letter: Str, width: Int, trimmed: Bool) -> Str {
+  let rounded = roundTo(number, count)
+  let digits = if trimmed { rounded.digits } else { Text.padRight(rounded.digits, count, "0") }
+  let first = if digits.isEmpty() { "0" } else { digits.take(1) }
+  let rest = if trimmed { digits.drop(1) } else { Text.padRight(digits.drop(1), count - 1, "0") }
+  let power = if rounded.digits.isEmpty() { 0 } else { rounded.exponent - 1 }
+  let mark = if power < 0 { "-" } else { "+" }
+  let minus = if number.negative && !rounded.digits.isEmpty() { "-" } else { "" }
+  minus + joined(first, rest) + letter + mark + Text.padLeft(show(Math.abs(power)), width, "0")
+}
+
+/// General notation with `count` significant digits: fixed for decimal exponents from -4 up to
+/// but not including `threshold`, scientific with a two-digit exponent otherwise.
+fn general(number: &Digits, count: Int, threshold: Int, letter: Str) -> Str {
+  let rounded = roundTo(number, count)
+  if rounded.digits.isEmpty() { return "0" }
+  let power = rounded.exponent - 1
+  if power < -4 || power >= threshold { return scientific(number, count, letter, 2, true) }
+  let places = Math.max(0, rounded.digits.length() - rounded.exponent)
+  let (integer, fraction) = fixed(&rounded, places)
+  (if rounded.negative { "-" } else { "" }) + joined(integer, fraction)
+}
+
+/// The integer's hexadecimal digits; a negative integer is its 64-bit two's complement.
+fn hex(value: Int) -> Str {
+  if value == 0 { return "0" }
+  var digits: Array[Str] = []
+  var rest = value
+  var count = 0
+  while rest != 0 && count < 16 {
+    let digit = ((rest % 16) + 16) % 16
+    digits = [HEX.slice(digit, digit + 1)].concat(digits)
+    rest = (rest - digit) / 16
+    count = count + 1
+  }
+  digits.join("")
+}
+
+/** @Log.Domain.Numbers.Pattern — a parsed custom numeric section */
+type Pattern = { pieces: Array[Str], integers: Int, minimumIntegers: Int, fractions: Int, minimumFractions: Int, grouping: Bool, percent: Bool }
+
+/// The number under a custom format of `0`, `#`, `.`, `,`, `%`, quoted literals, and up to three
+/// `;`-separated sections for positive, negative, and zero values.
+fn custom(number: &Digits, format: Str) -> Option[Str] {
+  let sections = sectionsOf(format)
+  let zero = number.digits.isEmpty()
+  let chosen = if zero && sections.length() > 2 { sections[2] } else if number.negative && sections.length() > 1 { sections[1] } else { sections[0] }
+  let pattern = patternOf(chosen)
+  let scaled = if pattern.percent { Digits{..*number, exponent: number.exponent + 2} } else { *number }
+  let (integer, fraction) = fixed(&scaled, pattern.fractions)
+  let shown = Text.dropWhileEnd(fraction, |character: Char| character == '0')
+  let fractionDigits = Text.padRight(shown, pattern.minimumFractions, "0")
+  let integerDigits = if integer == "0" && pattern.minimumIntegers == 0 { "" } else { Text.padLeft(integer, pattern.minimumIntegers, "0") }
+  let minus = if number.negative && sections.length() < 2 && !(integer.spanOf("0") == integer.length() && fraction.spanOf("0") == fraction.length()) { "-" } else { "" }
+  Some(minus + assemble(&pattern, if pattern.grouping { grouped(integerDigits) } else { integerDigits }, fractionDigits))
+}
+
+/// The format's sections, split at `;` outside quotes.
+fn sectionsOf(format: Str) -> Array[Str] {
+  var sections: Array[Str] = []
+  var current: Array[Str] = []
+  var quote = ' '
+  var escaped = false
+  for character in format.chars() {
+    if escaped {
+      escaped = false
+      current = current.push(character.toText())
+    } else if quote != ' ' {
+      if character == quote { quote = ' ' }
+      current = current.push(character.toText())
+    } else if character == '\\' {
+      escaped = true
+      current = current.push(character.toText())
+    } else if character == ';' {
+      sections = sections.push(current.join(""))
+      current = []
+    } else {
+      if character == '\'' || character == '"' { quote = character }
+      current = current.push(character.toText())
+    }
+  }
+  sections.push(current.join(""))
+}
+
+/// A section read into literal pieces and digit placeholders. Each piece is one literal character,
+/// or `0`, `#`, or `.` standing for a placeholder.
+fn patternOf(section: Str) -> Pattern {
+  var pieces: Array[Str] = []
+  var integers = 0
+  var firstZero = 0
+  var fractions = 0
+  var minimumFractions = 0
+  var grouping = false
+  var percent = false
+  var inFraction = false
+  var quote = ' '
+  var escaped = false
+  for character in section.chars() {
+    if escaped {
+      pieces = pieces.push("\\" + character.toText())
+      escaped = false
+    } else if quote != ' ' {
+      if character == quote { quote = ' ' } else { pieces = pieces.push("\\" + character.toText()) }
+    } else if character == '\'' || character == '"' {
+      quote = character
+    } else if character == '\\' {
+      escaped = true
+    } else if character == '0' || character == '#' {
+      pieces = pieces.push(character.toText())
+      if inFraction {
+        fractions = fractions + 1
+        if character == '0' { minimumFractions = fractions }
+      } else {
+        integers = integers + 1
+        if character == '0' && firstZero == 0 { firstZero = integers }
+      }
+    } else if character == '.' && !inFraction {
+      inFraction = true
+      pieces = pieces.push(".")
+    } else if character == ',' && !inFraction {
+      grouping = integers > 0
+    } else {
+      if character == '%' { percent = true }
+      pieces = pieces.push("\\" + character.toText())
+    }
+  }
+  let required = if firstZero > 0 { integers - firstZero + 1 } else { 0 }
+  Pattern{pieces: pieces, integers: integers, minimumIntegers: required, fractions: fractions, minimumFractions: minimumFractions, grouping: grouping, percent: percent}
+}
+
+/// The pattern's literals with integer digits laid right to left over the integer placeholders
+/// (any excess at the first, or all of them before the point when there is no integer placeholder)
+/// and fraction digits left to right over the fraction placeholders.
+fn assemble(pattern: &Pattern, integer: Str, fraction: Str) -> Str {
+  var out: Array[Str] = []
+  var seen = 0
+  var fractionIndex = 0
+  var inFraction = false
+  let digits = integer.chars()
+  let excess = Math.max(0, digits.length() - pattern.integers)
+  for piece in pattern.pieces {
+    if piece.startsWith("\\") {
+      out = out.push(piece.drop(1))
+    } else if piece == "." {
+      inFraction = true
+      if pattern.integers == 0 { out = out.push(integer) }
+      if !fraction.isEmpty() { out = out.push(".") }
+    } else if inFraction {
+      out = out.push(fraction.drop(fractionIndex).take(1))
+      fractionIndex = fractionIndex + 1
+    } else {
+      let slot = pattern.integers - seen
+      let taken = if seen == 0 { excess + 1 } else { 1 }
+      let end = digits.length() - slot + 1
+      let start = end - taken
+      out = out.push(List.drop(&List.take(&digits, Math.max(0, end)), Math.max(0, start)).map(|character: Char| character.toText()).join(""))
+      seen = seen + 1
+    }
+  }
+  out.join("")
+}

@@ -1,0 +1,51 @@
+/** @Log.Domain.Schedule.Module — batch retry timing after sink failures */
+module PuduLangLog.Domain.Schedule
+
+import Std.Math as Math
+import Std.Option as Option
+
+/** @Log.Domain.Schedule.State — failures since the last successful batch */
+export type State = { buffering: Int, retryLimit: Int, failures: Int, dropped: Int, firstFailure: Option[Int] }
+
+/** @Log.Domain.Schedule.Verdict — what to do with a failed batch */
+export type Verdict = { state: State, dropBatch: Bool, dropQueue: Bool }
+
+/// The shortest wait between retries once failures repeat, in milliseconds.
+const MINIMUM_BACKOFF: Int = 5000
+
+/// The longest wait between retries, in milliseconds.
+const MAXIMUM_BACKOFF: Int = 60000
+
+/// Consecutive dropped batches after which the queue is emptied too.
+const DROPS_BEFORE_QUEUE: Int = 10
+
+/// A schedule that waits `buffering` milliseconds between batches and gives up on a batch once
+/// retrying it would pass `retryLimit` milliseconds after its first failure.
+export fn create(buffering: Int, retryLimit: Int) -> State {
+  State{buffering: buffering, retryLimit: retryLimit, failures: 0, dropped: 0, firstFailure: None}
+}
+
+/// The schedule after a batch was written.
+export fn succeeded(state: &State) -> State { create(state.buffering, state.retryLimit) }
+
+/// The schedule after a batch failed at `now`, with whether to drop the batch and the queue.
+export fn failed(state: &State, now: Int) -> Verdict {
+  let first = Option.unwrapOr(state.firstFailure, now)
+  let counted = State{..*state, failures: state.failures + 1, firstFailure: Some(first)}
+  let dropBatch = now - first + interval(&counted) >= state.retryLimit
+  let dropped = if dropBatch { counted.dropped + 1 } else { counted.dropped }
+  Verdict{state: State{..counted, dropped: dropped}, dropBatch: dropBatch, dropQueue: dropped >= DROPS_BEFORE_QUEUE}
+}
+
+/// The wait before the next batch: the buffering time until two failures in a row, then a delay
+/// doubling from at least five seconds up to one minute.
+export fn interval(state: &State) -> Int {
+  if state.failures <= 1 { return state.buffering }
+  var backoff = Math.max(state.buffering, MINIMUM_BACKOFF)
+  var doublings = state.failures - 1
+  while doublings > 0 {
+    backoff = Math.min(MAXIMUM_BACKOFF, backoff * 2)
+    doublings = doublings - 1
+  }
+  Math.max(state.buffering, backoff)
+}

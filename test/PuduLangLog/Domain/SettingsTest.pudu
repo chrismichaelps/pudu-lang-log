@@ -1,0 +1,134 @@
+/** @Test.Domain.Settings.Suite — key-value settings read into a plan */
+module PuduLangLog.Domain.SettingsTest
+
+import Std.Io as Io
+import Std.Result as Result
+import Std.Test as Test
+import PuduLangLog.Domain.Settings as Settings
+import PuduLangLog as Log
+
+/// The plan of the settings.
+fn planOf(pairs: Array[(Str, Str)]) -> Settings.Plan { Settings.read(&pairs).plan }
+
+/// The problems of the settings.
+fn problemsOf(pairs: Array[(Str, Str)]) -> Array[Str] { Settings.read(&pairs).problems }
+
+/// Runs the suite.
+fn main() -> Int {
+  let none: Array[Str] = []
+  let full = Settings.read(&[
+      ("MinimumLevel:Default", "Debug"),
+      ("minimumlevel:override:App.Web", "Warning"),
+      ("MinimumLevel:Override:App.Jobs", "$jobs"),
+      ("LevelSwitches:$jobs", "Error"),
+      ("LevelSwitches:$root", "Verbose"),
+      ("MinimumLevel:ControlledBy", "$root"),
+      ("Properties:Application", "Shop"),
+      ("Properties:application", "Store"),
+      ("Enrich:0", "MachineName"),
+      ("Enrich:1:Name", "EnvironmentName"),
+      ("Enrich:1:Args:variable", "APP_ENV"),
+      ("WriteTo:0:Name", "Console"),
+      ("WriteTo:0:Args:theme", "none"),
+      ("WriteTo:File:Name", "File"),
+      ("WriteTo:File:Args:path", "log.txt"),
+      ("WriteTo:File:Args:levelSwitch", "$jobs"),
+      ("WriteTo:0:Args:Theme", "code"),
+      ("AuditTo:0", "Http"),
+      ("Filter:0:ByExcluding", "RequestPath like '/health%'"),
+      ("Filter:1:ByIncludingOnly", "@l <> 'Verbose'"),
+      ("Destructure:MaximumDepth", "4"),
+      ("Destructure:MaximumStringLength", "100"),
+      ("Destructure:MaximumCollectionCount", "10"),
+      ("Destructure:AsScalar:0", "Money")
+    ])
+  let plan = full.plan
+  let checks = Test.suite("Domain.Settings", &[
+      Test.equals("a full set of settings reads without problems", &full.problems, &none),
+      Test.equals("levels", &(plan.minimum, plan.controlledBy), &(Some(Log.Debug), Some("root"))),
+      Test.equals("level switches, their names without `$` and in lower case", &plan.switches, &[("jobs", Log.Error), ("root", Log.Verbose)]),
+      Test.equals("overrides keep levels and switch references", &plan.overrides, &[("App.Web", "Warning"), ("App.Jobs", "$jobs")]),
+      Test.equals("a later property replaces an earlier one ignoring case", &plan.properties, &[("application", "Store")]),
+      Test.equals("enrichers in order, with arguments", &plan.enrichers, &[Settings.Target{name: "MachineName", arguments: []}, Settings.Target{name: "EnvironmentName", arguments: [("variable", "APP_ENV")]}]),
+      Test.equals("sinks in first-seen order, arguments replaced ignoring case", &plan.sinks, &[Settings.Target{name: "Console", arguments: [("Theme", "code")]}, Settings.Target{name: "File", arguments: [("path", "log.txt"), ("levelSwitch", "$jobs")]}]),
+      Test.equals("audit sinks", &plan.audits, &[Settings.Target{name: "Http", arguments: []}]),
+      Test.equals("filters", &plan.filters, &[Settings.Filter{including: false, expression: "RequestPath like '/health%'"}, Settings.Filter{including: true, expression: "@l <> 'Verbose'"}]),
+      Test.equals("capture limits and scalar tags", &(plan.maximumDepth, plan.maximumStringLength, plan.maximumCollectionCount, plan.scalars), &(Some(4), Some(100), Some(10), ["Money"])),
+      Test.equals("a bare minimum level", &planOf([("MinimumLevel", "warning")]).minimum, &Some(Log.Warning)),
+      Test.equals("nothing decided", &planOf([]), &Settings.empty()),
+      Test.equals("malformed and unknown settings", &problemsOf([
+            ("MinimumLevel", "Loud"),
+            ("MinimumLevel:Override", "Debug"),
+            ("MinimumLevel:Override:App", "Loud"),
+            ("MinimumLevel:Other", "x"),
+            ("MinimumLevel:Default:Extra", "Debug"),
+            ("LevelSwitches:$a", "Loud"),
+            ("LevelSwitches", "Debug"),
+            ("Properties", "x"),
+            ("Enrich", "x"),
+            ("WriteTo:0:Args", "x"),
+            ("WriteTo:0:Other", "x"),
+            ("WriteTo:0:Args:", "x"),
+            ("Filter:0:Somehow", "x"),
+            ("Filter:0", "x"),
+            ("Destructure:MaximumDepth", "-1"),
+            ("Destructure:MaximumDepth", "deep"),
+            ("Destructure:Other", "1"),
+            ("Destructure", "1"),
+            ("Destructure:Other:x", "1"),
+            ("Destructure:AsScalar", "Money"),
+            ("Using:0", "Something")
+          ]), &[
+          "Unknown or malformed setting `MinimumLevel`",
+          "Unknown or malformed setting `MinimumLevel:Override`",
+          "Unknown or malformed setting `MinimumLevel:Override:App`",
+          "Unknown or malformed setting `MinimumLevel:Other`",
+          "Unknown or malformed setting `MinimumLevel:Default:Extra`",
+          "Unknown or malformed setting `LevelSwitches:$a`",
+          "Unknown or malformed setting `LevelSwitches`",
+          "Unknown or malformed setting `Properties`",
+          "Unknown or malformed setting `Enrich`",
+          "Unknown or malformed setting `WriteTo:0:Args`",
+          "Unknown or malformed setting `WriteTo:0:Other`",
+          "Unknown or malformed setting `WriteTo:0:Args:`",
+          "Unknown or malformed setting `Filter:0:Somehow`",
+          "Unknown or malformed setting `Filter:0`",
+          "Unknown or malformed setting `Destructure:MaximumDepth`",
+          "Unknown or malformed setting `Destructure:MaximumDepth`",
+          "Unknown or malformed setting `Destructure:Other`",
+          "Unknown or malformed setting `Destructure`",
+          "Unknown or malformed setting `Destructure:Other:x`",
+          "Unknown or malformed setting `Destructure:AsScalar`",
+          "Unknown or malformed setting `Using:0`"
+        ]),
+      Test.equals("references to undeclared switches and unnamed entries", &problemsOf([
+            ("MinimumLevel:ControlledBy", "$missing"),
+            ("MinimumLevel:Override:App", "$other"),
+            ("WriteTo:0:Args:levelSwitch", "$third"),
+            ("AuditTo:0:Args:x", "1"),
+            ("Enrich:0:Args:x", "1")
+          ]), &[
+          "An entry of `Enrich` names nothing",
+          "An entry of `WriteTo` names nothing",
+          "An entry of `AuditTo` names nothing",
+          "The level switch `missing` is not declared",
+          "The level switch `other` is not declared",
+          "The level switch `third` is not declared"
+        ]),
+      Test.equals("JSON under a section", &Settings.fromJson("\{\"Other\":1,\"log\":\{\"MinimumLevel\":\{\"Default\":\"Debug\"\},\"WriteTo\":[\{\"Name\":\"Console\",\"Args\":\{\"buffered\":true,\"limit\":5,\"ratio\":0.5,\"none\":null\}\}]\}\}", "Log"), &Ok([("MinimumLevel:Default", "Debug"), ("WriteTo:0:Name", "Console"), ("WriteTo:0:Args:buffered", "true"), ("WriteTo:0:Args:limit", "5"), ("WriteTo:0:Args:ratio", "0.5"), ("WriteTo:0:Args:none", "")])),
+      Test.equals("JSON lists are numbered from zero", &Settings.fromJson("\{\"Enrich\":[\"A\",\"B\",\"C\"]\}", ""), &Ok([("Enrich:0", "A"), ("Enrich:1", "B"), ("Enrich:2", "C")])),
+      Test.equals("JSON without a section, or missing it", &(Settings.fromJson("\{\"Properties\":\{\"A\":false\}\}", ""), Settings.fromJson("\{\"A\":1\}", "Log"), Settings.fromJson("[1]", "Log")), &(Ok([("Properties:A", "false")]), Ok([]), Ok([]))),
+      Test.that("text that is not JSON is refused", Result.isErr(&Settings.fromJson("\{", "Log"))),
+      Test.equals("environment variable names", &[Settings.environmentKey("APP__MinimumLevel__Default", "APP"), Settings.environmentKey("app__WriteTo__0__Name", "App"), Settings.environmentKey("APP__", "APP"), Settings.environmentKey("OTHER__X", "APP"), Settings.environmentKey("APPX__Y", "APP")], &[Some("MinimumLevel:Default"), Some("WriteTo:0:Name"), None, None, None]),
+      Test.equals("rolling intervals", &[Settings.intervalOf("day"), Settings.intervalOf(" Hour "), Settings.intervalOf("INFINITE"), Settings.intervalOf("week")], &[Some(Log.Day), Some(Log.Hour), Some(Log.Infinite), None]),
+      Test.equals("counts", &[Settings.count("0"), Settings.count(" 12 "), Settings.count("-1"), Settings.count("x")], &[Some(0), Some(12), None, None]),
+      Test.equals("flags", &[Settings.flag("TRUE"), Settings.flag(" false"), Settings.flag("yes")], &[Some(true), Some(false), None]),
+      Test.equals("switch names", &[Settings.switchName(" $Jobs "), Settings.switchName("jobs")], &["jobs", "jobs"]),
+      Test.equals("arguments by name ignoring case", &(Settings.argument(&Settings.Target{name: "x", arguments: [("Path", "a")]}, "path"), Settings.argument(&Settings.Target{name: "x", arguments: []}, "path")), &(Some("a"), None))
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

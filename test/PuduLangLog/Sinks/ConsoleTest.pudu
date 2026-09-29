@@ -1,0 +1,35 @@
+/** @Test.Sinks.Console.Suite — console text, colours, and streams */
+module PuduLangLog.Sinks.ConsoleTest
+
+import Std.Io as Io
+import Std.Test as Test
+import PuduLangLog.Domain.Display as Display
+import PuduLangLog.Event as Event
+import PuduLangLog as Log
+import PuduLangLog.Sinks.Console as Console
+import PuduLangLog.Sinks.Theme as Theme
+import PuduLangLog.Value as Value
+
+/// Runs the suite.
+fn main() -> Int {
+  let event = Event.create(Log.Timestamp{millis: 1790604309123, offset: 120}, Log.Warning, "Disk \{Disk\} low", [Value.property("Disk", Value.text("C"))])
+  let plain = Console.Options{..Console.defaults(), colored: false}
+  let colored = Console.Options{..Console.defaults(), colored: true, theme: Theme.sixteen()}
+  let styled = [Display.Piece{style: Display.StringStyle, text: "a\nb"}, Display.Piece{style: Display.Plain, text: "\n"}, Display.Piece{style: Display.LevelStyle(Log.Error), text: "ERR"}]
+  let checks = Test.suite("Sinks.Console", &[
+      Test.equals("the default layout without colour", &Console.render(&plain, &event), &"[16:05:09 WRN] Disk C low\n"),
+      Test.equals("colours wrap styled pieces", &Console.render(&colored, &event), &"[16:05:09 \u{1b}[33;1mWRN\u{1b}[0m] Disk \u{1b}[36mC\u{1b}[0m low\n"),
+      Test.equals("a custom formatter replaces the template", &Console.render(&Console.Options{..plain, formatter: Some(fn(written: &Log.Event) -> Str { Event.message(written) })}, &event), &"Disk \"C\" low"),
+      Test.equals("a custom template", &Console.render(&Console.Options{..plain, outputTemplate: "\{Level:u\}: \{Message:l\}"}, &event), &"WARNING: Disk C low"),
+      Test.that("standard output by default", !Console.toErrors(&plain, Log.Fatal)),
+      Test.equals("standard error from a level", &[Log.Information, Log.Error, Log.Fatal].map(|level: Log.Level| Console.toErrors(&Console.Options{..plain, standardErrorFromLevel: Some(Log.Error)}, level)), &[false, true, true]),
+      Test.equals("painting keeps line breaks outside the escapes", &Theme.paint(&Theme.sixteen(), &styled), &"\u{1b}[36ma\u{1b}[0m\n\u{1b}[36mb\u{1b}[0m\n\u{1b}[31;1mERR\u{1b}[0m"),
+      Test.equals("no theme is plain text", &Theme.paint(&Theme.none(), &styled), &"a\nb\nERR"),
+      Test.that("every theme colours errors", Theme.paint(&Theme.literate(), &styled).contains("\u{1b}[48;5;0196m") && Theme.paint(&Theme.grayscale(), &styled).contains("\u{1b}[30m\u{1b}[47m") && Theme.paint(&Theme.code(), &styled).contains("\u{1b}[38;5;0197m"))
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

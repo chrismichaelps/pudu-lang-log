@@ -1,0 +1,51 @@
+/** @Log.Web.Diagnostic.Collector — properties gathered while a request runs */
+module PuduLangLog.Web.Diagnostic
+
+import Std.Sync as Sync
+import PuduLangLog as Log
+
+/** @Log.Web.Diagnostic.Entry — a value set by a handler and how to capture it */
+export type Entry = { name: Str, value: Log.Value, destructure: Bool }
+
+/** @Log.Web.Diagnostic.Collector — what a handler added to its request's completion event */
+export type Collector = { entries: Sync.Cell[Array[Entry]], failure: Sync.Cell[Option[Log.Failure]] }
+
+/// An empty collector.
+export fn create() -> Collector {
+  let none: Array[Entry] = []
+  let noFailure: Option[Log.Failure] = None
+  Collector{entries: Sync.cell(none), failure: Sync.cell(noFailure)}
+}
+
+/// Sets a property of the completion event, replacing an earlier value of the same name.
+export fn set(collector: &Collector, name: Str, held: Log.Value) -> () { store(collector, Entry{name: name, value: held, destructure: false}) }
+
+/// Sets a property of the completion event that keeps its structure.
+export fn setDestructured(collector: &Collector, name: Str, held: Log.Value) -> () { store(collector, Entry{name: name, value: held, destructure: true}) }
+
+/// Stores an entry in place of any of the same name.
+fn store(collector: &Collector, entry: Entry) -> () {
+  let current = entries(collector).filter(|existing: Entry| existing.name != entry.name)
+  let _stored = Sync.set(&collector.entries, current.push(entry))
+}
+
+/// Attaches a failure to the completion event.
+export fn setFailure(collector: &Collector, problem: Log.Failure) -> () {
+  let _stored = Sync.set(&collector.failure, Some(problem))
+}
+
+/// The entries set, oldest first.
+export fn entries(collector: &Collector) -> Array[Entry] {
+  match Sync.get(&collector.entries) {
+    case Ok(held) => held
+    case Err(_) => []
+  }
+}
+
+/// The failure set, if any.
+export fn failure(collector: &Collector) -> Option[Log.Failure] {
+  match Sync.get(&collector.failure) {
+    case Ok(held) => held
+    case Err(_) => None
+  }
+}

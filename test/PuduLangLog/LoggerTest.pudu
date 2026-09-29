@@ -1,0 +1,107 @@
+/** @Test.Logger.Suite — the pipeline from a write to its sinks */
+module PuduLangLog.LoggerTest
+
+import Std.Io as Io
+import Std.Sync as Sync
+import Std.Test as Test
+import PuduLangLog.Clock as Clock
+import PuduLangLog.Configuration as Configuration
+import PuduLangLog.Event as Event
+import PuduLangLog.LevelSwitch as LevelSwitch
+import PuduLangLog as Log
+import PuduLangLog.Logger as Logger
+import PuduLangLog.SelfLog as SelfLog
+import PuduLangLog.Sinks.Memory as Memory
+import PuduLangLog.Value as Value
+
+/// The moment every event in this suite carries.
+const NOW: Log.Timestamp = Log.Timestamp{millis: 1790604309123, offset: 120}
+
+/// A configuration writing to a memory store with a fixed clock.
+fn base(memory: &Memory.Memory) -> Configuration.Configuration {
+  Configuration.create().clock(Clock.fixed(NOW)).writeTo(Memory.sink(memory))
+}
+
+/// A self-log collecting its lines.
+fn collecting(lines: &Sync.Cell[Array[Str]]) -> SelfLog.SelfLog {
+  let log = SelfLog.create()
+  let shared = *lines
+  SelfLog.enable(&log, fn(line: Str) -> () {
+      if let Ok(held) = Sync.get(&shared) { let _stored = Sync.set(&shared, held.push(line)) }
+    })
+  log
+}
+
+/// The lines a cell holds.
+fn linesOf(lines: &Sync.Cell[Array[Str]]) -> Array[Str] {
+  match Sync.get(lines) {
+    case Ok(held) => held
+    case Err(_) => []
+  }
+}
+
+/// Runs the suite.
+fn main() -> Int {
+  let memory = Memory.create()
+  let logger = base(&memory).createLogger()
+  logger.information("Disk \{Disk\} is \{Percent\}% full", [Value.text("C"), Value.int(93)])
+  logger.debug("Hidden", [])
+  let first = Memory.events(&memory)[0]
+
+  let switchMemory = Memory.create()
+  let control = LevelSwitch.create(Log.Warning)
+  let changes = Sync.cell(0)
+  LevelSwitch.onChange(&control, fn(_old: Log.Level, _new: Log.Level) -> () {
+      if let Ok(count) = Sync.get(&changes) { let _stored = Sync.set(&changes, count + 1) }
+    })
+  let switched = base(&switchMemory).controlledBy(&control).createLogger()
+  switched.information("before", [])
+  LevelSwitch.set(&control, Log.Debug)
+  LevelSwitch.set(&control, Log.Debug)
+  switched.information("after", [])
+
+  let overrideMemory = Memory.create()
+  let overridden = base(&overrideMemory).overrideLevel("App.Noisy", Log.Warning).overrideLevel("App.Noisy.Important", Log.Debug).minimumLevel(Log.Information).createLogger()
+  overridden.forSource("App.Noisy.Cache").information("noisy info", [])
+  overridden.forSource("App.Noisy.Cache").warning("noisy warning", [])
+  overridden.forSource("app.noisy.important").debug("important debug", [])
+  overridden.forSource("App.NoisyNeighbour").information("neighbour info", [])
+  overridden.information("plain info", [])
+  let truncatingMemory = Memory.create()
+  let truncating = base(&truncatingMemory).overrideLevel("App.Noisy", Log.Error).maximumStringLength(4).createLogger()
+  truncating.forSource("App.Noisy.Cache").warning("truncated source warning", [])
+
+  let contextMemory = Memory.create()
+  let noLines: Array[Str] = []
+  let lines = Sync.cell(noLines)
+  let contextual = base(&contextMemory).enrichWithProperty("App", Value.text("demo")).selfLog(&collecting(&lines)).createLogger()
+  let job = contextual.forContext("JobId", Value.int(7)).forContext("JobId", Value.int(8))
+  job.information("Job \{Step\}", [Value.text("start")])
+  job.information("Explicit \{JobId\}", [Value.int(1)])
+  let unchanged = contextual.forContext("  ", Value.int(1))
+  unchanged.information("still", [])
+  contextual.information("Missing \{A\} \{B\}", [Value.int(1)])
+
+  let checks = Test.suite("Logger", &[
+      Test.equals("an event is written with its parts", &(first.level, first.timestamp, first.template.text, first.failure), &(Log.Information, NOW, "Disk \{Disk\} is \{Percent\}% full", None)),
+      Test.equals("its message renders the values", &Event.message(&first), &"Disk \"C\" is 93% full"),
+      Test.equals("events below the minimum are dropped", &Memory.events(&memory).length(), &1),
+      Test.that("isEnabled follows the minimum", logger.isEnabled(Log.Information) && !logger.isEnabled(Log.Debug)),
+      Test.equals("a level switch changes what is written", &Memory.messages(&switchMemory), &["after"]),
+      Test.equals("a listener hears each real change once", &Sync.get(&changes), &Ok(1)),
+      Test.equals("overrides decide for their sources", &Memory.messages(&overrideMemory), &["noisy warning", "important debug", "neighbour info", "plain info"]),
+      Test.equals("overrides match the source as given, before truncation", &Memory.messages(&truncatingMemory), &[]),
+      Test.equals("the source context is a property", &Event.sourceContext(&Memory.events(&overrideMemory)[0]), &Some("App.Noisy.Cache")),
+      Test.equals("context properties join the event", &Event.property(&Memory.events(&contextMemory)[0], "JobId"), &Some(Value.int(8))),
+      Test.equals("pipeline enrichers add properties", &Event.property(&Memory.events(&contextMemory)[0], "App"), &Some(Value.text("demo"))),
+      Test.equals("message properties win over context", &Event.property(&Memory.events(&contextMemory)[1], "JobId"), &Some(Value.int(1))),
+      Test.equals("a blank context name leaves the logger unchanged", &Memory.events(&contextMemory)[2].properties.length(), &1),
+      Test.that("a blank context name is reported", linesOf(&lines).length() >= 1 && linesOf(&lines)[0].contains("invalid name")),
+      Test.that("binding problems are reported", linesOf(&lines).length() == 2 && linesOf(&lines)[1].contains("Named property count does not match parameter count: Missing"))
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

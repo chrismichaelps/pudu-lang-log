@@ -1,0 +1,92 @@
+/** @Log.Domain.Levels.Module — ranks, names, and monikers of levels */
+module PuduLangLog.Domain.Levels
+
+import Std.Char as Char
+import Std.List as List
+import Std.Map as Map
+import Std.Math as Math
+import PuduLangLog.Domain.Padding as Padding
+import PuduLangLog as Log
+
+/// Title-case monikers of each level by width; the last is the full name.
+const TITLE: Array[Array[Str]] = [
+  ["V", "Vb", "Vrb", "Verb", "Verbo", "Verbos", "Verbose"],
+  ["D", "De", "Dbg", "Dbug", "Debug"],
+  ["I", "In", "Inf", "Info", "Infor", "Inform", "Informa", "Informat", "Informati", "Informatio", "Information"],
+  ["W", "Wn", "Wrn", "Warn", "Warni", "Warnin", "Warning"],
+  ["E", "Er", "Err", "Eror", "Error"],
+  ["F", "Fa", "Ftl", "Fatl", "Fatal"]
+]
+
+/// The rank of each level name and number `parse` accepts, keyed in lower case.
+const NAMES: Map[Str, Int] = mapOf([
+    ("verbose", 0), ("debug", 1), ("information", 2), ("warning", 3), ("error", 4), ("fatal", 5),
+    ("0", 0), ("1", 1), ("2", 2), ("3", 3), ("4", 4), ("5", 5)
+  ])
+
+/// The level's position, from 0 for `Verbose` to 5 for `Fatal`.
+export fn rank(level: Log.Level) -> Int {
+  match level {
+    case Log.Verbose => 0
+    case Log.Debug => 1
+    case Log.Information => 2
+    case Log.Warning => 3
+    case Log.Error => 4
+    case Log.Fatal => 5
+  }
+}
+
+/// Whether an event at `level` is at or above `minimum`.
+export fn passes(level: Log.Level, minimum: Log.Level) -> Bool { rank(level) >= rank(minimum) }
+
+/// The more severe of two levels.
+export fn stricter(left: Log.Level, right: Log.Level) -> Log.Level { Log.LEVELS[Math.max(rank(left), rank(right))] }
+
+/// The level's full name, such as `Information`.
+export fn name(level: Log.Level) -> Str { monikerOf(level, 99) }
+
+/// The level a name or number denotes, ignoring case and surrounding spaces.
+export fn parse(text: Str) -> Option[Log.Level] {
+  let found = Map.get(&NAMES, text.trim().toLower()) ?
+  Some(Log.LEVELS[found])
+}
+
+/// The level rendered under an output format: a case letter `u`, `w`, or `t` followed by a width
+/// of one or two digits, or a lone `u` or `w`; any other format gives the full name.
+export fn moniker(level: Log.Level, format: &Option[Str]) -> Str {
+  let full = name(level)
+  let given = match format {
+    case Some(text) => text
+    case None => { return full }
+  }
+  let letters = given.chars()
+  let width = match widthOf(&letters) {
+    case Some(counted) => counted
+    case None => { return Padding.cased(full, format) }
+  }
+  if width < 1 { return "" }
+  let short = monikerOf(level, width)
+  match List.first(&letters) {
+    case Some('u') => short.toUpper()
+    case Some('w') => short.toLower()
+    case Some('t') => short
+    case _ => full
+  }
+}
+
+/// The digits after a format's case letter as a width, when there are one or two of them.
+fn widthOf(letters: &Array[Char]) -> Option[Int] {
+  let digits = List.drop(letters, 1)
+  if digits.length() < 1 || digits.length() > 2 { return None }
+  var width = 0
+  for digit in digits {
+    width = width * 10 + Char.toDigit(digit) ?
+  }
+  Some(width)
+}
+
+/// The title-case moniker of at most `width` characters.
+fn monikerOf(level: Log.Level, width: Int) -> Str {
+  let names = TITLE[rank(level)]
+  names[Math.min(width, names.length()) - 1]
+}

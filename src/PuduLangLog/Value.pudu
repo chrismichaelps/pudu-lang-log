@@ -1,0 +1,128 @@
+/** @Log.Value.Builders — constructors for captured property values */
+module PuduLangLog.Value
+
+import PuduLangLog.Domain.Display as Display
+import PuduLangLog.Domain.Json as Json
+import PuduLangLog as Log
+
+/** @Log.Value.Capturable — a type that knows its captured form */
+export trait Capturable {
+  fn capture(self: &Self) -> Log.Value
+}
+
+impl Capturable for Log.Value {
+  /// The value itself.
+  fn capture(self: &Self) -> Log.Value { *self }
+}
+
+impl Capturable for Int {
+  /// An integer scalar.
+  fn capture(self: &Self) -> Log.Value { int(*self) }
+}
+
+impl Capturable for Str {
+  /// A text scalar.
+  fn capture(self: &Self) -> Log.Value { text(*self) }
+}
+
+impl Capturable for Bool {
+  /// A boolean scalar.
+  fn capture(self: &Self) -> Log.Value { bool(*self) }
+}
+
+impl Capturable for Float64 {
+  /// A float scalar.
+  fn capture(self: &Self) -> Log.Value { float(*self) }
+}
+
+impl Capturable for Char {
+  /// A one-character text scalar.
+  fn capture(self: &Self) -> Log.Value { text(self.toText()) }
+}
+
+impl Capturable for Bytes {
+  /// A byte-string scalar.
+  fn capture(self: &Self) -> Log.Value { bytes(*self) }
+}
+
+impl Capturable for Log.Timestamp {
+  /// A moment scalar.
+  fn capture(self: &Self) -> Log.Value { moment(*self) }
+}
+
+impl [T: Capturable] Capturable for Array[T] {
+  /// A sequence of each element's captured form.
+  fn capture(self: &Self) -> Log.Value { Log.Sequence(self.map(|item: T| item.capture())) }
+}
+
+impl [T: Capturable] Capturable for Option[T] {
+  /// The held value's captured form, or null when absent.
+  fn capture(self: &Self) -> Log.Value {
+    match self {
+      case Some(item) => item.capture()
+      case None => nothing()
+    }
+  }
+}
+
+/// Any capturable value in its captured form.
+export fn of[T: Capturable](held: T) -> Log.Value { held.capture() }
+
+/// A text value.
+export fn text(held: Str) -> Log.Value { Log.Scalar(Log.Text(held)) }
+
+/// An integer value.
+export fn int(held: Int) -> Log.Value { Log.Scalar(Log.Integer(held)) }
+
+/// A float value.
+export fn float(held: Float64) -> Log.Value { Log.Scalar(Log.Real(held)) }
+
+/// An exact decimal value.
+export fn decimal(held: Decimal) -> Log.Value { Log.Scalar(Log.Exact(held)) }
+
+/// A boolean value.
+export fn bool(held: Bool) -> Log.Value { Log.Scalar(Log.Boolean(held)) }
+
+/// The null value.
+export fn nothing() -> Log.Value { Log.Scalar(Log.Null) }
+
+/// A moment value.
+export fn moment(held: Log.Timestamp) -> Log.Value { Log.Scalar(Log.Moment(held)) }
+
+/// A duration value in milliseconds.
+export fn duration(millis: Int) -> Log.Value { Log.Scalar(Log.Span(millis)) }
+
+/// A byte-string value.
+export fn bytes(held: Bytes) -> Log.Value { Log.Scalar(Log.Binary(held)) }
+
+/// A sequence of values.
+export fn list(items: Array[Log.Value]) -> Log.Value { Log.Sequence(items) }
+
+/// A structure with a type tag; destructure it with `@` in a template to keep its shape.
+export fn structure(tag: Str, members: Array[(Str, Log.Value)]) -> Log.Value {
+  Log.Structure(Log.Structure{tag: Some(tag), properties: members.map(|member: (Str, Log.Value)| property(member[0], member[1]))})
+}
+
+/// A structure without a type tag.
+export fn object(members: Array[(Str, Log.Value)]) -> Log.Value {
+  Log.Structure(Log.Structure{tag: None, properties: members.map(|member: (Str, Log.Value)| property(member[0], member[1]))})
+}
+
+/// A dictionary keyed by text.
+export fn dictionary(entries: Array[(Str, Log.Value)]) -> Log.Value {
+  Log.Dictionary(entries.map(|entry: (Str, Log.Value)| Log.Entry{key: Log.Text(entry[0]), value: entry[1]}))
+}
+
+/// A dictionary with scalar keys of any kind.
+export fn keyed(entries: Array[(Log.Scalar, Log.Value)]) -> Log.Value {
+  Log.Dictionary(entries.map(|entry: (Log.Scalar, Log.Value)| Log.Entry{key: entry[0], value: entry[1]}))
+}
+
+/// A named property.
+export fn property(name: Str, held: Log.Value) -> Log.Property { Log.Property{name: name, value: held} }
+
+/// The value as display text, the way a message shows it.
+export fn render(held: &Log.Value) -> Str { Display.plain(&Display.value(held, &None)) }
+
+/// The value as JSON.
+export fn json(held: &Log.Value) -> Str { Json.value(held, &Some(Display.TYPE_TAG)) }

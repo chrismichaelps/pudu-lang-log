@@ -1,0 +1,78 @@
+/** @Test.Domain.Rolling.Suite — rolling periods, names, retention, and retry timing */
+module PuduLangLog.Domain.RollingTest
+
+import Std.Io as Io
+import Std.Test as Test
+import PuduLangLog.Domain.Rolling as Rolling
+import PuduLangLog.Domain.Schedule as Schedule
+import PuduLangLog.Domain.Sources as Sources
+import PuduLangLog as Log
+
+/// 2026-09-28 14:05:09.123 UTC observed at two hours east: 16:05 local.
+const EAST: Log.Timestamp = Log.Timestamp{millis: 1790604309123, offset: 120}
+
+/// A rolled file.
+fn rolled(name: Str, period: Option[Int], sequence: Option[Int]) -> Rolling.Rolled { Rolling.Rolled{name: name, period: period, sequence: sequence} }
+
+/// A schedule after failures at the given moments.
+fn failedAt(start: Schedule.State, moments: Array[Int]) -> Schedule.Verdict {
+  var verdict = Schedule.Verdict{state: start, dropBatch: false, dropQueue: false}
+  for moment in moments { verdict = Schedule.failed(&verdict.state, moment) }
+  verdict
+}
+
+/// Runs the suite.
+fn main() -> Int {
+  let intervals = [Log.Infinite, Log.Year, Log.Month, Log.Day, Log.Hour, Log.Minute]
+  let files = [rolled("log-20260926.txt", Some(1790380800000), None), rolled("log-20260928.txt", Some(1790553600000), None), rolled("log-20260927.txt", Some(1790467200000), None), rolled("log-20260928_001.txt", Some(1790553600000), Some(1)), rolled("log-20260928_002.txt", Some(1790553600000), Some(2))]
+  let schedule = Schedule.create(2000, 600000)
+  let checks = Test.suite("Domain.Rolling", &[
+      Test.equals("period formats", &intervals.map(|interval: Log.RollingInterval| Rolling.periodFormat(interval)), &["", "yyyy", "yyyyMM", "yyyyMMdd", "yyyyMMddHH", "yyyyMMddHHmm"]),
+      Test.equals("checkpoints use the local clock", &intervals.map(|interval: Log.RollingInterval| Rolling.checkpoint(interval, &EAST)), &[None, Some(1767225600000), Some(1788220800000), Some(1790553600000), Some(1790611200000), Some(1790611500000)]),
+      Test.equals("next checkpoints", &intervals.map(|interval: Log.RollingInterval| Rolling.next(interval, &EAST)), &[None, Some(1798761600000), Some(1790812800000), Some(1790640000000), Some(1790614800000), Some(1790611560000)]),
+      Test.equals("the next month after December is January", &Rolling.next(Log.Month, &Log.Timestamp{millis: 1798761540000, offset: 0}), &Some(1798761600000)),
+      Test.equals("file names carry the period before the extension", &intervals.map(|interval: Log.RollingInterval| Rolling.fileName("logs/app.txt", interval, &EAST, None)), &["logs/app.txt", "logs/app2026.txt", "logs/app202609.txt", "logs/app20260928.txt", "logs/app2026092816.txt", "logs/app202609281605.txt"]),
+      Test.equals("sequence numbers", &(Rolling.fileName("log-.txt", Log.Day, &EAST, Some(1)), Rolling.fileName("log-.txt", Log.Day, &EAST, Some(1234))), &("log-20260928_001.txt", "log-20260928_1234.txt")),
+      Test.equals("a path without an extension", &Rolling.fileName("logs/app", Log.Day, &EAST, Some(2)), &"logs/app20260928_002"),
+      Test.equals("a dotted directory keeps its dot", &Rolling.fileName("my.logs/app", Log.Hour, &EAST, None), &"my.logs/app2026092816"),
+      Test.equals("names read back", &(Rolling.matches("logs/log-.txt", Log.Day, "log-20260928.txt"), Rolling.matches("logs/log-.txt", Log.Day, "log-20260928_007.txt")), &(Some(rolled("log-20260928.txt", Some(1790553600000), None)), Some(rolled("log-20260928_007.txt", Some(1790553600000), Some(7))))),
+      Test.equals("an unrolled name reads back without a period", &Rolling.matches("app.log", Log.Infinite, "app_003.log"), &Some(rolled("app_003.log", None, Some(3)))),
+      Test.equals("names that are not rolled files", &[Rolling.matches("log-.txt", Log.Day, "log-2026092.txt"), Rolling.matches("log-.txt", Log.Day, "log-20260928.json"), Rolling.matches("log-.txt", Log.Day, "other-20260928.txt"), Rolling.matches("log-.txt", Log.Day, "log-20260928_01.txt"), Rolling.matches("log-.txt", Log.Day, "log-20260928-001.txt"), Rolling.matches("log-.txt", Log.Day, "log-2026092a.txt"), Rolling.matches("log-.txt", Log.Day, "log-20260928_0x1.txt")], &[None, None, None, None, None, None, None]),
+      Test.equals("every interval reads its period back", &[Rolling.matches("app.log", Log.Month, "app202609.log"), Rolling.matches("app.log", Log.Hour, "app2026092816.log"), Rolling.matches("app.log", Log.Minute, "app202609281605.log")], &[Some(rolled("app202609.log", Some(1788220800000), None)), Some(rolled("app2026092816.log", Some(1790611200000), None)), Some(rolled("app202609281605.log", Some(1790611500000), None))]),
+      Test.equals("the first and last days of a year", &(Rolling.matches("a.log", Log.Day, "a20260101.log"), Rolling.matches("a.log", Log.Day, "a20261231.log")), &(Some(rolled("a20260101.log", Some(1767225600000), None)), Some(rolled("a20261231.log", Some(1798675200000), None)))),
+      Test.equals("the last day of February", &(Rolling.matches("a.log", Log.Day, "a20260228.log"), Rolling.matches("a.log", Log.Day, "a20240229.log"), Rolling.matches("a.log", Log.Day, "a20260229.log")), &(Some(rolled("a20260228.log", Some(1772236800000), None)), Some(rolled("a20240229.log", Some(1709164800000), None)), Some(rolled("a20260229.log", None, None)))),
+      Test.equals("the last minute of a day", &Rolling.matches("a.log", Log.Minute, "a202609282359.log"), &Some(rolled("a202609282359.log", Some(1790639940000), None))),
+      Test.equals("each field out of range alone", &[Rolling.matches("a.log", Log.Month, "a202613.log"), Rolling.matches("a.log", Log.Month, "a202600.log"), Rolling.matches("a.log", Log.Day, "a20260900.log"), Rolling.matches("a.log", Log.Hour, "a2026092824.log"), Rolling.matches("a.log", Log.Minute, "a202609281660.log")], &[Some(rolled("a202613.log", None, None)), Some(rolled("a202600.log", None, None)), Some(rolled("a20260900.log", None, None)), Some(rolled("a2026092824.log", None, None)), Some(rolled("a202609281660.log", None, None))]),
+      Test.equals("the unrolled file itself matches", &Rolling.matches("logs/app.log", Log.Infinite, "app.log"), &Some(rolled("app.log", None, None))),
+      Test.equals("a different stem with a matching tail does not match", &Rolling.matches("log-.txt", Log.Day, "xog-20260928.txt"), &None),
+      Test.equals("a different extension of the same length does not match", &Rolling.matches("log-.txt", Log.Day, "log-20260928_001xtxt"), &None),
+      Test.equals("a name shorter than the stem and extension does not match", &Rolling.matches("ab.txt", Log.Infinite, "ab"), &None),
+      Test.equals("impossible dates have no period", &(Rolling.matches("log-.txt", Log.Day, "log-20260231.txt"), Rolling.matches("log-.txt", Log.Minute, "log-202609282460.txt")), &(Some(rolled("log-20260231.txt", None, None)), Some(rolled("log-202609282460.txt", None, None)))),
+      Test.equals("the latest sequence of a period", &(Rolling.latestSequence(&files, Some(1790553600000)), Rolling.latestSequence(&files, Some(1790467200000))), &(Some(2), None)),
+      Test.equals("retention keeps the count, the current file included", &Rolling.retired(&files, "log-20260928_002.txt", Some(3), None), &["log-20260927.txt", "log-20260926.txt"]),
+      Test.equals("a count of one keeps only the current file", &Rolling.retired(&files, "LOG-20260928_002.TXT", Some(1), None).length(), &4),
+      Test.equals("no limits keep everything", &Rolling.retired(&files, "x", None, None), &[]),
+      Test.equals("retention by age removes older periods", &Rolling.retired(&files, "log-20260928_002.txt", None, Some(1790467200000)), &["log-20260926.txt"]),
+      Test.equals("a period exactly at the age limit is kept", &Rolling.retired(&[rolled("a", Some(10), None)], "x", None, Some(10)), &[]),
+      Test.equals("a sequence is newer than no sequence", &Rolling.retired(&[rolled("b_000", Some(5), Some(0)), rolled("b", Some(5), None)], "x", Some(2), None), &["b"]),
+      Test.equals("a higher sequence is newer", &Rolling.retired(&[rolled("b_002", Some(5), Some(2)), rolled("b_010", Some(5), Some(10))], "x", Some(2), None), &["b_002"]),
+      Test.equals("equal periods and sequences keep the later name", &(Rolling.retired(&[rolled("a", Some(5), None), rolled("b", Some(5), None)], "x", Some(2), None), Rolling.retired(&[rolled("b", Some(5), None), rolled("a", Some(5), None)], "x", Some(2), None)), &(["a"], ["a"])),
+      Test.equals("files without periods are oldest", &Rolling.retired(&[rolled("old", None, None), rolled("new", Some(5), None)], "x", Some(2), None), &["old"]),
+      Test.equals("buffering time until repeated failures", &(Schedule.interval(&schedule), Schedule.interval(&failedAt(schedule, [0]).state)), &(2000, 2000)),
+      Test.equals("backoff doubles from five seconds to a minute", &[2, 3, 4, 5, 100].map(|failures: Int| Schedule.interval(&Schedule.State{..schedule, failures: failures})), &[10000, 20000, 40000, 60000, 60000]),
+      Test.equals("a long buffering time is never shortened", &Schedule.interval(&Schedule.State{..Schedule.create(90000, 600000), failures: 3}), &90000),
+      Test.equals("a failure within the retry limit keeps the batch", &failedAt(schedule, [1000]), &Schedule.Verdict{state: Schedule.State{..schedule, failures: 1, firstFailure: Some(1000)}, dropBatch: false, dropQueue: false}),
+      Test.equals("a retry past the limit drops the batch", &failedAt(Schedule.create(2000, 3000), [0, 2500]).dropBatch, &true),
+      Test.equals("a retry exactly at the limit drops the batch", &failedAt(Schedule.create(2000, 2000), [0]).dropBatch, &true),
+      Test.equals("ten dropped batches drop the queue", &(failedAt(Schedule.create(2000, 0), [0, 0, 0, 0, 0, 0, 0, 0, 0]).dropQueue, failedAt(Schedule.create(2000, 0), [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).dropQueue), &(false, true)),
+      Test.equals("success resets the schedule", &Schedule.succeeded(&failedAt(schedule, [0, 1, 2]).state), &schedule),
+      Test.that("a prefix covers itself and what lies beneath it", Sources.covers("App.Web", "App.Web") && Sources.covers("App.Web", "App.Web.Api") && Sources.covers("app.web", "App.Web.Api")),
+      Test.that("a prefix does not cover a longer word", !Sources.covers("App.Web", "App.Website") && !Sources.covers("App.Web", "App") && !Sources.covers("App.Web", "Other")),
+      Test.that("beneath keeps case", Sources.beneath("App", "App.X") && !Sources.beneath("app", "App.X"))
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

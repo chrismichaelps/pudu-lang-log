@@ -1,0 +1,62 @@
+/** @Test.Timing.Suite — timed operations and their outcomes */
+module PuduLangLog.TimingTest
+
+import Std.Io as Io
+import Std.Sync as Sync
+import Std.Test as Test
+import PuduLangLog.Configuration as Configuration
+import PuduLangLog.Event as Event
+import PuduLangLog.Failure as Failure
+import PuduLangLog as Log
+import PuduLangLog.Sinks.Memory as Memory
+import PuduLangLog.Timing as Timing
+import PuduLangLog.Value as Value
+
+/// A counter answering 0, 10, 20, … on successive readings.
+fn tens() -> fn() -> Int {
+  let next = Sync.counter(-10)
+  fn() -> Int {
+    match Sync.increment(&next, 10) {
+      case Ok(value) => value
+      case Err(_) => 0
+    }
+  }
+}
+
+/// Runs the suite.
+fn main() -> Int {
+  let memory = Memory.create()
+  let logger = Configuration.create().minimumLevel(Log.Verbose).writeTo(Memory.sink(&memory)).createLogger()
+  let charging = Timing.beginWith(&logger, "Charging \{OrderId\}", [Value.int(42)], tens()).enrichWith("Gateway", Value.text("card"))
+  charging.complete()
+  charging.complete()
+  Timing.beginWith(&logger, "Shipping", [], tens()).abandon()
+  Timing.beginWith(&logger, "Slow", [], tens()).warnAfter(5).complete()
+  Timing.beginWith(&logger, "Quick", [], tens()).warnAfter(50).at(Log.Debug, Log.Error).complete()
+  Timing.beginWith(&logger, "Counting", [], tens()).completeWith("Rows", Value.int(7))
+  Timing.beginWith(&logger, "Ignored", [], tens()).cancel()
+  Timing.beginWith(&logger, "Failing", [], tens()).abandonWith(Failure.of("IoError", "gone"))
+  let answer = Timing.run(&logger, "Running", [], fn() -> Int { 5 })
+  let failed: Result[Int, Str] = Timing.runResult(&logger, "Trying", [], "ParseError", fn() -> Result[Int, Str] { Err("bad") })
+  let succeeded: Result[Int, Str] = Timing.runResult(&logger, "Trying", [], "ParseError", fn() -> Result[Int, Str] { Ok(1) })
+  let events = Memory.events(&memory)
+  let messages = Memory.messages(&memory)
+  let checks = Test.suite("Timing", &[
+      Test.equals("a completion names its outcome and time", &messages[0], &"Charging 42 completed in 10.0 ms"),
+      Test.equals("an operation completes once", &Memory.withTemplate(&memory, "Charging \{OrderId\} \{Outcome:l\} in \{Elapsed:0.0\} ms").length(), &1),
+      Test.equals("completion properties", &(Event.property(&events[0], "Outcome"), Event.property(&events[0], "Elapsed"), Event.property(&events[0], "Gateway")), &(Some(Value.text("completed")), Some(Value.float(10.0)), Some(Value.text("card")))),
+      Test.equals("levels of each outcome", &events.map(|event: Log.Event| event.level), &[Log.Information, Log.Warning, Log.Warning, Log.Debug, Log.Information, Log.Warning, Log.Information, Log.Warning, Log.Information]),
+      Test.equals("an abandonment names its outcome", &messages[1], &"Shipping abandoned in 10.0 ms"),
+      Test.equals("a completion with a result", &Event.property(&events[4], "Rows"), &Some(Value.int(7))),
+      Test.that("a cancelled operation writes nothing", Memory.withTemplate(&memory, "Ignored \{Outcome:l\} in \{Elapsed:0.0\} ms").isEmpty()),
+      Test.equals("an abandonment can carry a failure", &events[5].failure, &Some(Failure.of("IoError", "gone"))),
+      Test.equals("running answers the action's value", &answer, &5),
+      Test.equals("an error abandons with the error as failure", &(failed, events[7].failure), &(Err("bad"), Some(Failure.of("ParseError", "bad")))),
+      Test.equals("success completes", &(succeeded, Event.property(&events[8], "Outcome")), &(Ok(1), Some(Value.text("completed"))))
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

@@ -1,0 +1,103 @@
+/** @Log.Expressions.Lexer.Scanner — expression text into tokens */
+module PuduLangLog.Expressions.Lexer
+
+import Std.Char as Char
+import Std.Set as Set
+
+/** @Log.Expressions.Lexer.Kind — what a token is */
+export type Kind = Identifier | BuiltIn | Number | Text | Keyword | Symbol | End
+
+/** @Log.Expressions.Lexer.Token — a token and where it starts */
+export type Token = { kind: Kind, text: Str, position: Int }
+
+/// Words with a meaning of their own, matched without regard to case.
+const KEYWORDS: Set[Str] = setOf(["and", "or", "not", "like", "in", "is", "null", "true", "false", "if", "then", "else", "ci"])
+
+/// Two-character symbols, tried before single characters.
+const PAIRS: Set[Str] = setOf(["<>", "<=", ">=", ".."])
+
+/// Single-character symbols.
+const SINGLES: Str = "=<>+-*/%^()[]\{\},.:?"
+
+/// The tokens of the text followed by an end token, or the position and reason of the first
+/// character that starts no token.
+export fn tokens(text: Str) -> Result[Array[Token], Str] {
+  let characters = text.chars()
+  var found: Array[Token] = []
+  var index = 0
+  while index < characters.length() {
+    let character = characters[index]
+    if Char.isWhitespace(character) {
+      index = index + 1
+    } else if character == '\'' {
+      let (literal, next) = textAt(&characters, index) ?
+      found = found.push(Token{kind: Text, text: literal, position: index})
+      index = next
+    } else if Char.isDigit(character) {
+      let next = numberEnd(&characters, index)
+      found = found.push(Token{kind: Number, text: text.slice(index, next), position: index})
+      index = next
+    } else if character == '@' || isStart(character) {
+      let next = wordEnd(&characters, index + 1)
+      let word = text.slice(index, next)
+      let kind = if character == '@' { BuiltIn } else if Set.contains(&KEYWORDS, word.toLower()) { Keyword } else { Identifier }
+      found = found.push(Token{kind: kind, text: if kind == Keyword { word.toLower() } else { word }, position: index})
+      index = next
+    } else if Set.contains(&PAIRS, text.slice(index, index + 2)) {
+      found = found.push(Token{kind: Symbol, text: text.slice(index, index + 2), position: index})
+      index = index + 2
+    } else if SINGLES.contains(character.toText()) {
+      found = found.push(Token{kind: Symbol, text: character.toText(), position: index})
+      index = index + 1
+    } else {
+      return Err("unexpected `" + character.toText() + "` at " + show(index))
+    }
+  }
+  Ok(found.push(Token{kind: End, text: "", position: characters.length()}))
+}
+
+/// Whether a character starts a name.
+fn isStart(character: Char) -> Bool { Char.isLetter(character) || character == '_' || !Char.isAscii(character) }
+
+/// The index after the name characters from `start`.
+fn wordEnd(characters: &Array[Char], start: Int) -> Int {
+  var end = start
+  while end < characters.length() && (isStart(characters[end]) || Char.isDigit(characters[end])) { end = end + 1 }
+  end
+}
+
+/// The index after a decimal number with an optional fraction, or a hexadecimal number after `0x`.
+fn numberEnd(characters: &Array[Char], start: Int) -> Int {
+  var end = start + 1
+  if characters[start] == '0' && end < characters.length() && characters[end] == 'x' {
+    end = end + 1
+    while end < characters.length() && Char.isHexDigit(characters[end]) { end = end + 1 }
+    return end
+  }
+  while end < characters.length() && Char.isDigit(characters[end]) { end = end + 1 }
+  if end + 1 < characters.length() && characters[end] == '.' && Char.isDigit(characters[end + 1]) {
+    end = end + 1
+    while end < characters.length() && Char.isDigit(characters[end]) { end = end + 1 }
+  }
+  end
+}
+
+/// The text of a single-quoted literal starting at `start`, a doubled quote standing for one, and
+/// the index after it.
+fn textAt(characters: &Array[Char], start: Int) -> Result[(Str, Int), Str] {
+  var pieces: Array[Str] = []
+  var index = start + 1
+  while index < characters.length() {
+    let character = characters[index]
+    if character == '\'' {
+      let doubled = index + 1 < characters.length() && characters[index + 1] == '\''
+      if !doubled { return Ok((pieces.join(""), index + 1)) }
+      pieces = pieces.push("'")
+      index = index + 2
+    } else {
+      pieces = pieces.push(character.toText())
+      index = index + 1
+    }
+  }
+  Err("unterminated text starting at " + show(start))
+}

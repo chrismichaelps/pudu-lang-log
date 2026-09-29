@@ -1,0 +1,62 @@
+/** @Test.Expressions.Template.Suite — expression templates and their directives */
+module PuduLangLog.Expressions.TemplateTest
+
+import Std.Io as Io
+import Std.Test as Test
+import PuduLangLog.Event as Event
+import PuduLangLog.Expressions as Expressions
+import PuduLangLog.Failure as Failure
+import PuduLangLog as Log
+import PuduLangLog.Value as Value
+
+/// The event every template in this suite renders.
+fn sample() -> Log.Event {
+  Event.withFailure(&Event.create(Log.Timestamp{millis: 1790604309123, offset: 0}, Log.Warning, "Cart \{Cart\} for \{User\}", [
+        Value.property("User", Value.text("Ada")),
+        Value.property("Cart", Value.list([Value.text("tea"), Value.text("cup")])),
+        Value.property("Total", Value.decimal(12.5d)),
+        Value.property("Meta", Value.object([("region", Value.text("eu")), ("tier", Value.int(2))])),
+        Value.property("Empty", Value.list([]))
+      ]), Failure.of("IoError", "full"))
+}
+
+/// The text a template renders for the sample event, or `?` and the reason it was refused.
+fn rendered(template: Str) -> Str {
+  match Expressions.template(template) {
+    case Ok(formatter) => formatter(&sample())
+    case Err(reason) => "? " + reason
+  }
+}
+
+/// Runs the suite.
+fn main() -> Int {
+  let checks = Test.suite("Expressions.Template", &[
+      Test.equals("literal text and doubled braces", &rendered("plain \{\{x\}\} text"), &"plain \{x\} text"),
+      Test.equals("holes with formats", &rendered("[\{@t:HH:mm:ss\} \{@l:u3\}] \{Total:0.00\} \{User\}"), &"[14:05:09 WRN] 12.50 Ada"),
+      Test.equals("the message and the template", &rendered("\{@m\} | \{@mt\}"), &"Cart [\"tea\",\"cup\"] for Ada | Cart \{Cart\} for \{User\}"),
+      Test.equals("collections render as JSON and undefined holes as nothing", &rendered("\{Meta\}|\{Missing\}|\{@x\}"), &"\{\"region\":\"eu\",\"tier\":2\}||IoError: full"),
+      Test.equals("an if block", &rendered("\{#if Total > 10\}big\{#end\}"), &"big"),
+      Test.equals("else if and else", &[rendered("\{#if Total > 100\}a\{#else if Total > 10\}b\{#else\}c\{#end\}"), rendered("\{#if Total > 100\}a\{#else if Total > 50\}b\{#else\}c\{#end\}"), rendered("\{#if Missing\}a\{#end\}")], &["b", "c", ""]),
+      Test.equals("each over a sequence with a delimiter", &rendered("\{#each item, i in Cart\}\{i\}:\{item\}\{#delimit\}, \{#end\}"), &"0:tea, 1:cup"),
+      Test.equals("each over members", &rendered("\{#each name, held in Meta\}\{name\}=\{held\}\{#delimit\};\{#end\}"), &"region=eu;tier=2"),
+      Test.equals("each with an else for nothing", &[rendered("\{#each x in Empty\}\{x\}\{#else\}none\{#end\}"), rendered("\{#each x in Missing\}\{x\}\{#else\}none\{#end\}")], &["none", "none"]),
+      Test.equals("nested blocks", &rendered("\{#each x in Cart\}\{#if x = 'cup'\}[\{x\}]\{#end\}\{#end\}"), &"[cup]"),
+      Test.equals("rest leaves out names the template reads", &rendered("\{User\} \{Rest()\}"), &"Ada \{\"Cart\":[\"tea\",\"cup\"],\"Total\":12.5,\"Meta\":\{\"region\":\"eu\",\"tier\":2\},\"Empty\":[]\}"),
+      Test.equals("deep rest also leaves out names the message uses", &rendered("\{Rest(true)\}"), &"\{\"Total\":12.5,\"Meta\":\{\"region\":\"eu\",\"tier\":2\},\"Empty\":[]\}"),
+      Test.equals("refusals", &[rendered("\{User"), rendered("\{#if User\}x"), rendered("\{#end\}"), rendered("\{#frob\}"), rendered("\{#each x Cart\}\{#end\}"), rendered("\{#if a\}\{#else\}b\{#delimit\}"), rendered("\{User User\}"), rendered("\{Frob(User)\}")], &[
+          "? a hole opened at 0 is not closed",
+          "? `\{#if\}` is not closed",
+          "? unexpected `\{#end\}`",
+          "? unknown directive `\{#frob\}`",
+          "? `\{#each\}` needs `in`",
+          "? `\{#else\}` must be followed by `\{#end\}`",
+          "? unexpected `User` in hole `User User`",
+          "? unknown function `frob`"
+        ])
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

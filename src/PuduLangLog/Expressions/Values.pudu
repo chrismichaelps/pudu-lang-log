@@ -1,0 +1,139 @@
+/** @Log.Expressions.Values.Semantics — equality, order, and matching of values */
+module PuduLangLog.Expressions.Values
+
+import Std.Decimal as Decimal
+import Std.List as List
+import PuduLangLog.Domain.Display as Display
+import PuduLangLog as Log
+
+/// A boolean value.
+export fn boolean(flag: Bool) -> Option[Log.Value] { Some(Log.Scalar(Log.Boolean(flag))) }
+
+/// An exact number value at the smallest scale that keeps it, so `1 / 4` is `0.25`.
+export fn number(held: Decimal) -> Option[Log.Value] {
+  var places = Decimal.scale(held)
+  while places > 0 && Decimal.rescale(held, places - 1) == held { places = places - 1 }
+  Some(Log.Scalar(Log.Exact(Decimal.rescale(held, places))))
+}
+
+/// A text value.
+export fn text(held: Str) -> Option[Log.Value] { Some(Log.Scalar(Log.Text(held))) }
+
+/// Whether a value is the boolean `true`; nothing else counts as true.
+export fn isTrue(held: &Option[Log.Value]) -> Bool { *held == Some(Log.Scalar(Log.Boolean(true))) }
+
+/// A value's number, reading integers, floats, and decimals alike.
+export fn decimalOf(held: &Option[Log.Value]) -> Option[Decimal] {
+  match held {
+    case Some(Log.Scalar(Log.Integer(value))) => Some(Decimal.fromInt(value))
+    case Some(Log.Scalar(Log.Exact(value))) => Some(value)
+    case Some(Log.Scalar(Log.Real(value))) => show(value).toDecimal()
+    case _ => None
+  }
+}
+
+/// A value's text.
+export fn textOf(held: &Option[Log.Value]) -> Option[Str] {
+  match held {
+    case Some(Log.Scalar(Log.Text(value))) => Some(value)
+    case _ => None
+  }
+}
+
+/// A value's elements when it is a sequence.
+export fn itemsOf(held: &Option[Log.Value]) -> Option[Array[Log.Value]] {
+  match held {
+    case Some(Log.Sequence(items)) => Some(items)
+    case _ => None
+  }
+}
+
+/// Whether two values are equal: numbers by value whatever their kind, text optionally ignoring
+/// case, and sequences, structures, and dictionaries member by member.
+export fn equal(left: &Log.Value, right: &Log.Value, ignoring: Bool) -> Bool {
+  let numbers = (decimalOf(&Some(*left)), decimalOf(&Some(*right)))
+  if let (Some(first), Some(second)) = numbers { return first == second }
+  match (*left, *right) {
+    case (Log.Scalar(Log.Text(first)), Log.Scalar(Log.Text(second))) => if ignoring { first.toLower() == second.toLower() } else { first == second }
+    case (Log.Sequence(first), Log.Sequence(second)) => first.length() == second.length() && List.all(&List.zip(&first, &second), |pair: (Log.Value, Log.Value)| equal(&pair[0], &pair[1], ignoring))
+    case (Log.Structure(first), Log.Structure(second)) => first.properties.length() == second.properties.length() && List.all(&first.properties, |member: Log.Property| match List.find(&second.properties, |other: Log.Property| other.name == member.name) {
+        case Some(other) => equal(&member.value, &other.value, ignoring)
+        case None => false
+      })
+    case _ => *left == *right
+  }
+}
+
+/// The equality of two possibly undefined values; undefined when either is.
+export fn equals(left: &Option[Log.Value], right: &Option[Log.Value], ignoring: Bool) -> Option[Log.Value] {
+  let (first, second) = ((*left) ?, (*right) ?)
+  boolean(equal(&first, &second, ignoring))
+}
+
+/// The order of two numbers under a comparison operator; undefined unless both are numbers.
+export fn compare(operator: Str, left: &Option[Log.Value], right: &Option[Log.Value]) -> Option[Log.Value] {
+  let first = decimalOf(left) ?
+  let second = decimalOf(right) ?
+  match operator {
+    case "<" => boolean(first < second)
+    case "<=" => boolean(first <= second)
+    case ">" => boolean(first > second)
+    case _ => boolean(first >= second)
+  }
+}
+
+/// Whether text matches a pattern where `%` stands for any run of characters and `_` for one;
+/// `%%` and `__` stand for the characters themselves.
+export fn like(subject: Str, pattern: Str, ignoring: Bool) -> Bool {
+  let cased = if ignoring { subject.toLower() } else { subject }
+  let wanted = if ignoring { pattern.toLower() } else { pattern }
+  matches(&cased.chars(), 0, &piecesOf(wanted), 0)
+}
+
+/** @Log.Expressions.Values.Piece — one element of a like pattern */
+type Piece = Any | One | Exactly(Char)
+
+/// The pattern as wildcards and literal characters.
+fn piecesOf(pattern: Str) -> Array[Piece] {
+  let characters = pattern.chars()
+  var pieces: Array[Piece] = []
+  var index = 0
+  while index < characters.length() {
+    let character = characters[index]
+    let doubled = List.get(&characters, index + 1) == Some(character)
+    if (character == '%' || character == '_') && doubled {
+      pieces = pieces.push(Exactly(character))
+      index = index + 2
+    } else {
+      pieces = pieces.push(if character == '%' { Any } else if character == '_' { One } else { Exactly(character) })
+      index = index + 1
+    }
+  }
+  pieces
+}
+
+/// Whether the characters from `at` match the pieces from `piece`.
+fn matches(subject: &Array[Char], at: Int, pieces: &Array[Piece], piece: Int) -> Bool {
+  match List.get(pieces, piece) {
+    case None => at == subject.length()
+    case Some(Any) => {
+      var start = at
+      while start <= subject.length() {
+        if matches(subject, start, pieces, piece + 1) { return true }
+        start = start + 1
+      }
+      false
+    }
+    case Some(One) => at < subject.length() && matches(subject, at + 1, pieces, piece + 1)
+    case Some(Exactly(character)) => List.get(subject, at) == Some(character) && matches(subject, at + 1, pieces, piece + 1)
+  }
+}
+
+/// A value as text for `ToString` and templates: text as it is, and anything else as displayed
+/// under the format.
+export fn render(held: &Log.Value, format: Option[Str]) -> Str {
+  match held {
+    case Log.Scalar(Log.Text(value)) => value
+    case _ => Display.plain(&Display.value(held, &format))
+  }
+}

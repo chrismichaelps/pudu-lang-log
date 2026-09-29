@@ -1,0 +1,66 @@
+/** @Log.Enricher.Stage — adds properties to events as they pass */
+module PuduLangLog.Enricher
+
+import PuduLangLog.Domain.Capture as Capture
+import PuduLangLog.Domain.Levels as Levels
+import PuduLangLog.Domain.Properties as Properties
+import PuduLangLog.LevelSwitch as LevelSwitch
+import PuduLangLog as Log
+
+/** @Log.Enricher.Function — an event in, the enriched event out */
+export type Enricher = fn(Log.Event, &Capture.Policy) -> Log.Event
+
+/// Adds a property unless the event already has one of that name; structures render to text.
+export fn property(name: Str, held: Log.Value) -> Enricher { captured(name, held, Log.Default) }
+
+/// Adds a property unless the event already has one of that name, keeping structures.
+export fn destructured(name: Str, held: Log.Value) -> Enricher { captured(name, held, Log.Destructure) }
+
+/// Adds a property captured under a hint unless the event already has one of that name.
+fn captured(name: Str, held: Log.Value, hint: Log.Hint) -> Enricher {
+  fn(event: Log.Event, policy: &Capture.Policy) -> Log.Event {
+    if Properties.has(&event.properties, name) { return event }
+    Log.Event{..event, properties: event.properties.push(Log.Property{name: name, value: Capture.capture(policy, &held, hint)})}
+  }
+}
+
+/// Adds a property computed from the event unless the event already has one of that name, keeping
+/// structures when `destructure` is set.
+export fn computed(name: Str, compute: fn(&Log.Event) -> Log.Value, destructure: Bool) -> Enricher {
+  let hint = if destructure { Log.Destructure } else { Log.Default }
+  fn(event: Log.Event, policy: &Capture.Policy) -> Log.Event {
+    if Properties.has(&event.properties, name) { return event }
+    let held = compute(&event)
+    Log.Event{..event, properties: event.properties.push(Log.Property{name: name, value: Capture.capture(policy, &held, hint)})}
+  }
+}
+
+/// An enricher from a function over events.
+export fn from(change: fn(Log.Event) -> Log.Event) -> Enricher {
+  fn(event: Log.Event, _policy: &Capture.Policy) -> Log.Event { change(event) }
+}
+
+/// Applies an enricher only to events the condition accepts.
+export fn when(condition: fn(&Log.Event) -> Bool, enricher: Enricher) -> Enricher {
+  fn(event: Log.Event, policy: &Capture.Policy) -> Log.Event { if condition(&event) { enricher(event, policy) } else { event } }
+}
+
+/// Applies an enricher only to events at or above a level.
+export fn atLevel(minimum: Log.Level, enricher: Enricher) -> Enricher {
+  when(fn(event: &Log.Event) -> Bool { Levels.passes(event.level, minimum) }, enricher)
+}
+
+/// Applies an enricher only to events a level switch allows.
+export fn atSwitch(control: &LevelSwitch.LevelSwitch, enricher: Enricher) -> Enricher {
+  let shared = *control
+  when(fn(event: &Log.Event) -> Bool { LevelSwitch.allows(&shared, event.level) }, enricher)
+}
+
+/// Applies enrichers in order.
+export fn all(enrichers: Array[Enricher]) -> Enricher {
+  fn(event: Log.Event, policy: &Capture.Policy) -> Log.Event {
+    var current = event
+    for enricher in enrichers { current = enricher(current, policy) }
+    current
+  }
+}

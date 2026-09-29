@@ -1,0 +1,48 @@
+/** @Test.Formatting.Reader.Suite — compact JSON written and read back */
+module PuduLangLog.Formatting.ReaderTest
+
+import Std.Env as Env
+import Std.Io as Io
+import Std.Result as Result
+import Std.Test as Test
+import PuduLangLog.Event as Event
+import PuduLangLog.Failure as Failure
+import PuduLangLog.Formatting.Compact as Compact
+import PuduLangLog.Formatting.Reader as Reader
+import PuduLangLog as Log
+import PuduLangLog.Value as Value
+
+/// The compact text of events written, read back, and written again.
+fn rewritten(formatter: Log.Formatter, events: &Array[Log.Event]) -> Result[Str, Str] {
+  let text = events.map(|event: Log.Event| formatter(&event)).join("")
+  let read = Reader.readAll(text) ?
+  Ok(read.map(|event: Log.Event| formatter(&event)).join(""))
+}
+
+/// Runs the suite.
+fn main() -> Int {
+  let moment = Log.Timestamp{millis: 1790604309123, offset: 0}
+  let first = Event.create(moment, Log.Warning, "Disk \{Disk\} is \{Percent:0.0\}% full", [Value.property("Disk", Value.text("C")), Value.property("Percent", Value.decimal(93.25d))])
+  let second = Event.withTrace(&Event.withFailure(&Event.create(moment, Log.Information, "User \{@User\}", [Value.property("User", Value.structure("User", [("Name", Value.text("a\"b")), ("Tags", Value.list([Value.text("x")]))])), Value.property("@odd", Value.bool(false))]), Failure.causedBy(&Failure.withTrace(&Failure.of("IoError", "full"), ["write"]), Failure.of("Os", "denied"))), "t1", "s1")
+  let events = [first, second]
+  let compactText = events.map(|event: Log.Event| Compact.compact()(&event)).join("")
+  let path = Env.temporaryDirectory() + "/pudu-lang-log-reader-test.clef"
+  let _written = Io.write(path, compactText + "\n\n")
+  let fromFile = Reader.readFile(path)
+  let _removed = Io.remove(path)
+  let checks = Test.suite("Formatting.Reader", &[
+      Test.equals("compact JSON reads back to the same text", &rewritten(Compact.compact(), &events), &Ok(compactText)),
+      Test.equals("rendered compact JSON reads back to the same messages", &Result.map(Reader.readAll(events.map(|event: Log.Event| Compact.rendered()(&event)).join("")), |read: Array[Log.Event]| read.map(|event: Log.Event| Event.message(&event))), &Ok(events.map(|event: Log.Event| Event.message(&event)))),
+      Test.equals("a read event renders the same message", &Result.map(Reader.readLine(Compact.compact()(&second)), |event: Log.Event| Event.message(&event)), &Ok(Event.message(&second))),
+      Test.equals("the failure survives the round trip", &Result.map(Reader.readLine(Compact.compact()(&second)), |event: Log.Event| event.failure), &Ok(second.failure)),
+      Test.equals("a file with blank lines", &Result.map(fromFile, |read: Array[Log.Event]| read.length()), &Ok(2)),
+      Test.equals("a missing file is refused", &Result.isErr(&Reader.readFile(path)), &true),
+      Test.equals("the first bad line is named", &Reader.readAll(compactText + "oops\n"), &Err("Line 3: The line is not JSON: expected a value at 0")),
+      Test.equals("empty text holds no events", &Result.map(Reader.readAll(""), |read: Array[Log.Event]| read.length()), &Ok(0))
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

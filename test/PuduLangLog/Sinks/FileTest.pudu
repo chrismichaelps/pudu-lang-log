@@ -1,0 +1,122 @@
+/** @Test.Sinks.File.Suite — appending, rolling, limits, retention, and buffering */
+module PuduLangLog.Sinks.FileTest
+
+import Std.Concurrent as Concurrent
+import Std.Env as Env
+import Std.Fs as Fs
+import Std.Io as Io
+import Std.List as List
+import Std.Result as Result
+import Std.Sync as Sync
+import Std.Test as Test
+import Std.Time as Time
+import PuduLangLog.Event as Event
+import PuduLangLog as Log
+import PuduLangLog.Sinks.File as File
+
+/// Milliseconds in a day.
+const DAY: Int = 86400000
+
+/// 2026-09-28 10:00 UTC.
+const MORNING: Int = 1790589600000
+
+/// An event on a day after the first, carrying a message.
+fn event(day: Int, message: Str) -> Log.Event {
+  Event.create(Log.Timestamp{millis: MORNING + day * DAY, offset: 0}, Log.Information, message, [])
+}
+
+/// Options writing each message on its own line.
+fn lines(path: Str) -> File.Options { File.Options{..File.defaults(path), formatter: fn(written: &Log.Event) -> Str { Event.message(written) + "\n" }} }
+
+/// Emits events through a sink built from options, then closes it.
+fn run(options: File.Options, events: Array[Log.Event]) -> Array[Result[(), Str]] {
+  let sink = File.sink(options)
+  let results = events.map(|written: Log.Event| (sink.emit)(&written))
+  (sink.close)()
+  results
+}
+
+/// The sorted names of a directory's files.
+fn namesIn(directory: Str) -> Array[Str] {
+  List.sortBy(&Result.unwrapOr(Io.list(directory), []), fn(left: Str, right: Str) -> Bool { left < right })
+}
+
+/// A file's text, or empty text when it cannot be read.
+fn read(path: Str) -> Str { Result.unwrapOr(Io.read(path), "") }
+
+/// Runs the suite.
+fn main() -> Int {
+  let root = Io.join(Env.temporaryDirectory(), "pudu-lang-log-file-" + show(Time.toMillis(&Time.currentInstant())))
+  let _cleared = Fs.removeTree(root)
+
+  let plain = Io.join(root, "plain/nested/app.log")
+  let plainResults = run(lines(plain), [event(0, "one"), event(0, "two")])
+
+  let daily = Io.join(root, "daily")
+  let _daily = run(File.Options{..lines(Io.join(daily, "app-.log")), rollingInterval: Log.Day}, [event(0, "first"), event(1, "second"), event(1, "third")])
+
+  let limited = Io.join(root, "limited/app.log")
+  let _limited = run(File.Options{..lines(limited), fileSizeLimitBytes: Some(10)}, [event(0, "aaaaaaa"), event(0, "bbbbbbb"), event(0, "ccccccc")])
+
+  let sized = Io.join(root, "sized")
+  let _sized = run(File.Options{..lines(Io.join(sized, "app.log")), fileSizeLimitBytes: Some(10), rollOnFileSizeLimit: true}, [event(0, "aaaaaaaaaa"), event(0, "bbbbbbbbbb"), event(0, "cccccccccc")])
+
+  let kept = Io.join(root, "kept")
+  let deleted = Sync.cell(0)
+  let _kept = run(File.Options{..lines(Io.join(kept, "app-.log")), rollingInterval: Log.Day, retainedFileCountLimit: Some(2), onDeleting: Some(fn(_path: Str) -> () {
+          if let Ok(count) = Sync.get(&deleted) { let _stored = Sync.set(&deleted, count + 1) }
+        }) }, [event(0, "a"), event(1, "b"), event(2, "c"), event(3, "d")])
+
+  let aged = Io.join(root, "aged")
+  let _aged = run(File.Options{..lines(Io.join(aged, "app-.log")), rollingInterval: Log.Day, retainedFileCountLimit: None, retainedFileTimeLimit: Some(2 * DAY)}, [event(0, "a"), event(1, "b"), event(2, "c"), event(3, "d")])
+
+  let headed = Io.join(root, "headed/app-.log")
+  let _headed = run(File.Options{..lines(headed), rollingInterval: Log.Day, onOpened: Some(fn(_path: Str) -> Option[Str] { Some("# header\n") })}, [event(0, "a"), event(0, "b")])
+  let _reopened = run(File.Options{..lines(headed), rollingInterval: Log.Day, onOpened: Some(fn(_path: Str) -> Option[Str] { Some("# header\n") })}, [event(0, "c")])
+
+  let resumed = Io.join(root, "resumed")
+  let _made = Io.makeDirectory(resumed)
+  let _seeded = Io.write(Io.join(resumed, "app-20260928_003.log"), "old\n")
+  let _resumed = run(File.Options{..lines(Io.join(resumed, "app-.log")), rollingInterval: Log.Day}, [event(0, "new")])
+
+  let buffered = Io.join(root, "buffered/app.log")
+  let bufferedSink = File.sink(File.Options{..lines(buffered), buffered: true})
+  let _first = (bufferedSink.emit)(&event(0, "held"))
+  let beforeFlush = Io.exists(buffered)
+  (bufferedSink.flush)()
+  let afterFlush = read(buffered)
+  (bufferedSink.close)()
+  let afterClose = (bufferedSink.emit)(&event(0, "late"))
+
+  let timed = Io.join(root, "timed/app.log")
+  let timedSink = File.sink(File.Options{..lines(timed), buffered: true, flushInterval: Some(100)})
+  let _timed = (timedSink.emit)(&event(0, "soon"))
+  let _waited = Concurrent.sleep(400)
+  let timedText = read(timed)
+  (timedSink.close)()
+
+  let checks = Test.suite("Sinks.File", &[
+      Test.equals("events are appended in order", &read(plain), &"one\ntwo\n"),
+      Test.equals("every write succeeds", &plainResults, &[Ok(()), Ok(())]),
+      Test.equals("a file per day", &namesIn(daily), &["app-20260928.log", "app-20260929.log"]),
+      Test.equals("each day holds its events", &(read(Io.join(daily, "app-20260928.log")), read(Io.join(daily, "app-20260929.log"))), &("first\n", "second\nthird\n")),
+      Test.equals("a full file takes no more events", &read(limited), &"aaaaaaa\nbbbbbbb\n"),
+      Test.equals("a full file gives way to the next sequence", &namesIn(sized), &["app.log", "app_001.log", "app_002.log"]),
+      Test.equals("each sequence holds one event", &read(Io.join(sized, "app_002.log")), &"cccccccccc\n"),
+      Test.equals("retention keeps the count", &namesIn(kept), &["app-20260930.log", "app-20261001.log"]),
+      Test.equals("the deleting hook sees each removal", &Sync.get(&deleted), &Ok(2)),
+      Test.equals("retention by age removes periods that started before the limit", &namesIn(aged), &["app-20260930.log", "app-20261001.log"]),
+      Test.equals("a header starts only a new file", &read(Io.join(root, "headed/app-20260928.log")), &"# header\na\nb\nc\n"),
+      Test.equals("the latest sequence on disk is resumed", &(namesIn(resumed), read(Io.join(resumed, "app-20260928_003.log"))), &(["app-20260928_003.log"], "old\nnew\n")),
+      Test.that("buffered text waits for a flush", !beforeFlush),
+      Test.equals("a flush writes buffered text", &afterFlush, &"held\n"),
+      Test.equals("a closed sink refuses events", &afterClose, &Err("the file sink is closed")),
+      Test.equals("a flushing thread writes on its own", &timedText, &"soon\n")
+    ])
+  let _removed = Fs.removeTree(root)
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}
