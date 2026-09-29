@@ -1,0 +1,166 @@
+/** @Log.Domain.Rolling.Module — rolling file names, periods, and retention */
+module PuduLangLog.Domain.Rolling
+
+import Std.Char as Char
+import Std.List as List
+import Std.Math as Math
+import Std.Option as Option
+import Std.Path as Path
+import Std.Text as Text
+import Std.Time.Format as Calendar
+import PuduLangLog.Domain.Dates as Dates
+import PuduLangLog as Log
+
+/** @Log.Domain.Rolling.Rolled — a file name read back into its period */
+export type Rolled = { name: Str, period: Option[Int], sequence: Option[Int] }
+
+/// Milliseconds in a minute.
+const MINUTE: Int = 60000
+
+/// The date pattern a file name carries for an interval.
+export fn periodFormat(interval: Log.RollingInterval) -> Str {
+  match interval {
+    case Log.Infinite => ""
+    case Log.Year => "yyyy"
+    case Log.Month => "yyyyMM"
+    case Log.Day => "yyyyMMdd"
+    case Log.Hour => "yyyyMMddHH"
+    case Log.Minute => "yyyyMMddHHmm"
+  }
+}
+
+/// The start of the period holding the moment, as the local clock's milliseconds; none for
+/// `Infinite`.
+export fn checkpoint(interval: Log.RollingInterval, moment: &Log.Timestamp) -> Option[Int] {
+  let parts = Calendar.partsOf(moment.millis + moment.offset * MINUTE)
+  let start = match interval {
+    case Log.Infinite => { return None }
+    case Log.Year => Calendar.Parts{..parts, month: 1, day: 1, hour: 0, minute: 0, second: 0, milli: 0}
+    case Log.Month => Calendar.Parts{..parts, day: 1, hour: 0, minute: 0, second: 0, milli: 0}
+    case Log.Day => Calendar.Parts{..parts, hour: 0, minute: 0, second: 0, milli: 0}
+    case Log.Hour => Calendar.Parts{..parts, minute: 0, second: 0, milli: 0}
+    case Log.Minute => Calendar.Parts{..parts, second: 0, milli: 0}
+  }
+  Some(Calendar.millisOf(&start))
+}
+
+/// The start of the period after the one holding the moment, as the local clock's milliseconds.
+export fn next(interval: Log.RollingInterval, moment: &Log.Timestamp) -> Option[Int] {
+  let start = Calendar.partsOf(checkpoint(interval, moment) ?)
+  let following = match interval {
+    case Log.Year => Calendar.Parts{..start, year: start.year + 1}
+    case Log.Month => Calendar.Parts{..start, month: start.month + 1}
+    case Log.Day => Calendar.Parts{..start, day: start.day + 1}
+    case Log.Hour => Calendar.Parts{..start, hour: start.hour + 1}
+    case _ => Calendar.Parts{..start, minute: start.minute + 1}
+  }
+  Some(Calendar.millisOf(&following))
+}
+
+/// The file for the period holding the moment: the period's date and an optional `_NNN` sequence
+/// inserted before the path's extension.
+export fn fileName(path: Str, interval: Log.RollingInterval, moment: &Log.Timestamp, sequence: Option[Int]) -> Str {
+  let period = match checkpoint(interval, moment) {
+    case Some(start) => Dates.formatMoment(&Log.Timestamp{millis: start, offset: 0}, &Some(periodFormat(interval)))
+    case None => ""
+  }
+  let suffix = match sequence {
+    case Some(number) => "_" + Text.padLeft(show(number), 3, "0")
+    case None => ""
+  }
+  let (stem, extension) = partsOf(path)
+  stem + period + suffix + extension
+}
+
+/// The path without its extension, and the extension with its dot.
+fn partsOf(path: Str) -> (Str, Str) {
+  let (stem, extension) = Path.splitExtension(path)
+  match extension {
+    case Some(given) => (stem, "." + given)
+    case None => (stem, "")
+  }
+}
+
+/// A file name in the path's directory read back into its period and sequence, when it is one of
+/// the path's rolled files.
+export fn matches(path: Str, interval: Log.RollingInterval, name: Str) -> Option[Rolled] {
+  let (stem, extension) = partsOf(Path.nameOf(path))
+  if !name.startsWith(stem) || !name.endsWith(extension) || name.length() < stem.length() + extension.length() { return None }
+  let middle = name.slice(stem.length(), name.length() - extension.length())
+  let width = periodFormat(interval).length()
+  let digits = middle.take(width)
+  if digits.length() != width || (width > 0 && !allDigits(digits)) { return None }
+  let rest = middle.drop(width)
+  let sequence = if rest.isEmpty() {
+    None
+  } else {
+    let number = rest.drop(1)
+    if !rest.startsWith("_") || number.length() < 3 || !allDigits(number) { return None }
+    Text.countOf(number)
+  }
+  Some(Rolled{name: name, period: periodOf(interval, digits), sequence: sequence})
+}
+
+/// Whether text is one or more digits.
+fn allDigits(text: Str) -> Bool { !text.isEmpty() && Text.allChars(text, |character: Char| Char.isDigit(character)) }
+
+/// The local milliseconds a period's digits name, when they form a date. A month outside 1 to 12
+/// has no days, so its first day is already out of range.
+fn periodOf(interval: Log.RollingInterval, digits: Str) -> Option[Int] {
+  if interval == Log.Infinite { return None }
+  let year = Text.countOf(digits.take(4)) ?
+  let month = if digits.length() >= 6 { Text.countOf(digits.slice(4, 6)) ? } else { 1 }
+  let day = if digits.length() >= 8 { Text.countOf(digits.slice(6, 8)) ? } else { 1 }
+  let hour = if digits.length() >= 10 { Text.countOf(digits.slice(8, 10)) ? } else { 0 }
+  let minute = if digits.length() >= 12 { Text.countOf(digits.slice(10, 12)) ? } else { 0 }
+  if day < 1 || day > Calendar.daysInMonth(year, month) || hour > 23 || minute > 59 { return None }
+  Some(Calendar.millisOf(&Calendar.Parts{year: year, month: month, day: day, hour: hour, minute: minute, second: 0, milli: 0}))
+}
+
+/// The highest sequence among the files of one period, when any carries one.
+export fn latestSequence(files: &Array[Rolled], period: Option[Int]) -> Option[Int] {
+  var latest: Option[Int] = None
+  for file in files {
+    if file.period == period {
+      if let Some(number) = file.sequence {
+        latest = Some(Math.max(number, Option.unwrapOr(latest, 0)))
+      }
+    }
+  }
+  latest
+}
+
+/// A text key ordering files by period, sequence, and name, a missing number counting as the
+/// oldest: each number is a presence mark and twenty zero-padded digits, so the text sorts as the
+/// numbers do.
+fn orderOf(file: &Rolled) -> Str { numberKey(&file.period) + numberKey(&file.sequence) + file.name }
+
+/// An optional non-negative number as sortable text.
+fn numberKey(number: &Option[Int]) -> Str {
+  match number {
+    case Some(value) => "1" + Text.padLeft(show(value), 20, "0")
+    case None => "0"
+  }
+}
+
+/// The names of files to delete: every file but the current one, newest first (by period, then
+/// sequence, then name, a missing value counting as the oldest), after the first `count - 1` of
+/// them, and any whose period started before `oldest`.
+export fn retired(files: &Array[Rolled], current: Str, count: Option[Int], oldest: Option[Int]) -> Array[Str] {
+  let others = List.sortOn(&files.filter(|file: Rolled| file.name.toLower() != current.toLower()), |file: Rolled| orderOf(&file)).reverse()
+  var removed: Array[Str] = []
+  var index = 0
+  for file in others {
+    let tooMany = match count {
+      case Some(limit) => index >= limit - 1
+      case None => false
+    }
+    let tooOld = match (oldest, file.period) {
+      case (Some(limit), Some(started)) => started < limit
+      case _ => false
+    }
+    if tooMany || tooOld || !removed.isEmpty() { removed = removed.push(file.name) }
+    index = index + 1
+  }
+  removed
+}

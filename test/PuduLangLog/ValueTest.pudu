@@ -1,0 +1,52 @@
+/** @Test.Value.Suite — value builders, failures, and clocks */
+module PuduLangLog.ValueTest
+
+import Std.Bytes as Bytes
+import Std.Io as Io
+import Std.Test as Test
+import PuduLangLog.Clock as Clock
+import PuduLangLog.Failure as Failure
+import PuduLangLog as Log
+import PuduLangLog.Value as Value
+
+/** @Test.Value.Point — a program type that captures itself */
+type Point = { x: Int, y: Int }
+
+impl Value.Capturable for Point {
+  /// The point as a tagged structure.
+  fn capture(self: &Self) -> Log.Value { Value.structure("Point", [("X", Value.int(self.x)), ("Y", Value.int(self.y))]) }
+}
+
+/// Runs the suite.
+fn main() -> Int {
+  let moment = Log.Timestamp{millis: 5, offset: 60}
+  let none: Option[Int] = None
+  let stepping = Clock.stepping(moment, 10)
+  let firstStep = stepping()
+  let secondStep = stepping()
+  let failure = Failure.causedBy(&Failure.withTrace(&Failure.of("ParseError", "bad digit"), ["Reader.next", "Main.main"]), Failure.from("IoError", "closed"))
+  let checks = Test.suite("Value", &[
+      Test.equals("built-in types capture as scalars", &[Value.of(3), Value.of("x"), Value.of(true), Value.of(1.5), Value.of('c')], &[Value.int(3), Value.text("x"), Value.bool(true), Value.float(1.5), Value.text("c")]),
+      Test.equals("moments and bytes capture as scalars", &(Value.of(moment), Value.of(Bytes.fromText("a"))), &(Log.Scalar(Log.Moment(moment)), Log.Scalar(Log.Binary(Bytes.fromText("a"))))),
+      Test.equals("arrays capture as sequences", &Value.of([1, 2]), &Value.list([Value.int(1), Value.int(2)])),
+      Test.equals("options capture their value or null", &(Value.of(Some(4)), Value.of(none), Value.of([Some("a"), None])), &(Value.int(4), Value.nothing(), Value.list([Value.text("a"), Value.nothing()]))),
+      Test.equals("values capture as themselves", &Value.of(Value.int(1)), &Value.int(1)),
+      Test.equals("program types capture as they choose", &Value.of(Point{x: 1, y: 2}), &Value.structure("Point", [("X", Value.int(1)), ("Y", Value.int(2))])),
+      Test.equals("durations and decimals", &(Value.duration(1500), Value.decimal(2.50d)), &(Log.Scalar(Log.Span(1500)), Log.Scalar(Log.Exact(2.50d)))),
+      Test.equals("objects are untagged structures", &Value.object([("A", Value.int(1))]), &Log.Structure(Log.Structure{tag: None, properties: [Value.property("A", Value.int(1))]})),
+      Test.equals("dictionaries by text and by any scalar", &(Value.dictionary([("a", Value.int(1))]), Value.keyed([(Log.Integer(2), Value.int(2))])), &(Log.Dictionary([Log.Entry{key: Log.Text("a"), value: Value.int(1)}]), Log.Dictionary([Log.Entry{key: Log.Integer(2), value: Value.int(2)}]))),
+      Test.equals("render shows a value as a message would", &Value.render(&Value.of(Point{x: 1, y: 2})), &"Point \{ X: 1, Y: 2 \}"),
+      Test.equals("json shows a value as a JSON formatter would", &Value.json(&Value.of(Point{x: 1, y: 2})), &"\{\"X\":1,\"Y\":2,\"$type\":\"Point\"\}"),
+      Test.equals("failures describe their trace and causes", &Failure.describe(&failure), &"ParseError: bad digit\n   at Reader.next\n   at Main.main\n ---> IoError: closed"),
+      Test.equals("a failure from an error value", &(Failure.from("Code", 42), Failure.from("Text", "quoted")), &(Failure.of("Code", "42"), Failure.of("Text", "quoted"))),
+      Test.equals("a fixed clock", &Clock.fixed(moment)(), &moment),
+      Test.equals("a stepping clock advances per reading", &(firstStep, secondStep), &(moment, Log.Timestamp{millis: 15, offset: 60})),
+      Test.that("the system clock reads the present", Clock.system()().millis > 1700000000000),
+      Test.equals("the UTC clock has no offset", &Clock.utc()().offset, &0)
+    ])
+  let ran = Test.run(&checks)
+  for problem in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(problem)
+  }
+  Test.report(&ran)
+}

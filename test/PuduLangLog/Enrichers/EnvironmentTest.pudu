@@ -1,0 +1,54 @@
+/** @Test.Enrichers.Environment.Suite — machine, user, process, and failure properties */
+module PuduLangLog.Enrichers.EnvironmentTest
+
+import Std.Io as Io
+import Std.Test as Test
+import PuduLangLog.Configuration as Configuration
+import PuduLangLog.Enrichers.Environment as Environment
+import PuduLangLog.Event as Event
+import PuduLangLog.Failure as Failure
+import PuduLangLog as Log
+import PuduLangLog.Logger as Logger
+import PuduLangLog.Sinks.Memory as Memory
+import PuduLangLog.Value as Value
+
+/// Runs the suite.
+fn main() -> Int {
+  let memory = Memory.create()
+  let logger = Configuration.create().writeTo(Memory.sink(&memory)).enrichWith(Environment.machineName()).enrichWith(Environment.environmentUserName()).enrichWith(Environment.environmentName("PUDU_LANG_LOG_UNSET_VARIABLE")).enrichWith(Environment.environmentName("HOME")).enrichWith(Environment.processId()).enrichWith(Environment.processName()).enrichWith(Environment.environmentVariable("HOME")).enrichWith(Environment.environmentVariable("PUDU_LANG_LOG_UNSET_VARIABLE")).enrichWith(Environment.failureDetail()).createLogger()
+  logger.writeFailure(Log.Error, Failure.causedBy(&Failure.withTrace(&Failure.of("IoError", "full"), ["Disk.write"]), Failure.of("Quota", "exceeded")), "failed", [])
+  logger.information("fine", [])
+  let failed = Memory.events(&memory)[0]
+  let fine = Memory.events(&memory)[1]
+  let checks = Test.suite("Enrichers.Environment", &[
+      Test.that("the machine has a name", match Event.property(&failed, "MachineName") {
+          case Some(Log.Scalar(Log.Text(name))) => !name.isEmpty()
+          case _ => false
+        }),
+      Test.that("the user name is text", match Event.property(&failed, "EnvironmentUserName") {
+          case Some(Log.Scalar(Log.Text(_))) => true
+          case _ => false
+        }),
+      Test.equals("an unset environment variable means production, and the first enricher wins", &Event.property(&failed, "EnvironmentName"), &Some(Value.text("Production"))),
+      Test.that("the process has a positive identifier", match Event.property(&failed, "ProcessId") {
+          case Some(Log.Scalar(Log.Integer(number))) => number > 0
+          case _ => false
+        }),
+      Test.that("the process has a name", match Event.property(&failed, "ProcessName") {
+          case Some(Log.Scalar(Log.Text(name))) => !name.isEmpty() && !name.contains("/")
+          case _ => false
+        }),
+      Test.that("a set variable becomes a property of its name", match Event.property(&failed, "HOME") {
+          case Some(Log.Scalar(Log.Text(home))) => !home.isEmpty()
+          case _ => false
+        }),
+      Test.equals("an unset variable adds nothing", &Event.property(&failed, "PUDU_LANG_LOG_UNSET_VARIABLE"), &None),
+      Test.equals("failure details as a structure", &Event.property(&failed, "FailureDetail"), &Some(Value.structure("IoError", [("Kind", Value.text("IoError")), ("Message", Value.text("full")), ("Trace", Value.list([Value.text("Disk.write")])), ("Causes", Value.list([Value.structure("Quota", [("Kind", Value.text("Quota")), ("Message", Value.text("exceeded")), ("Trace", Value.list([])), ("Causes", Value.list([]))])]))]))),
+      Test.equals("no failure means null detail", &Event.property(&fine, "FailureDetail"), &Some(Value.nothing()))
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

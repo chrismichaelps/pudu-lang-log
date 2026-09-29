@@ -1,0 +1,12 @@
+/** @Log.Domain.Sources.Module — source context prefixes and their ordering */
+module PuduLangLog.Domain.Sources
+
+/// Whether a source context is the prefix or lies beneath it, `App.Web` covering `App.Web.Api`
+/// but not `App.Website`, ignoring case.
+export fn covers(prefix: Str, source: Str) -> Bool { beneath(prefix.toLower(), source.toLower()) }
+
+/// Whether a source context is the prefix or lies beneath it, with case significant.
+export fn beneath(prefix: Str, source: Str) -> Bool {
+  if !source.startsWith(prefix) { return false }
+  source.length() == prefix.length() || source.slice(prefix.length(), prefix.length() + 1) == "."
+}

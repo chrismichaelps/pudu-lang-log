@@ -1,0 +1,63 @@
+/** @Log.Sinks.Console.Sink — events written to the terminal */
+module PuduLangLog.Sinks.Console
+
+import Std.Out as Out
+import Std.Sync as Sync
+import Std.Term as Term
+import PuduLangLog.Constants.Names as Names
+import PuduLangLog.Domain.Levels as Levels
+import PuduLangLog.Domain.Output as Output
+import PuduLangLog.Domain.Parser as Parser
+import PuduLangLog as Log
+import PuduLangLog.Sink as Sink
+import PuduLangLog.Sinks.Theme as Theme
+
+/** @Log.Sinks.Console.Options — layout, colours, and error stream */
+export type Options = {
+  outputTemplate: Str,
+  theme: Theme.Theme,
+  colored: Bool,
+  standardErrorFromLevel: Option[Log.Level],
+  formatter: Option[fn(&Log.Event) -> Str]
+}
+
+/// The console template, the literate theme when the terminal takes colour, and every event on
+/// standard output.
+export fn defaults() -> Options {
+  Options{outputTemplate: Names.CONSOLE_TEMPLATE, theme: Theme.literate(), colored: Term.colorEnabled(), standardErrorFromLevel: None, formatter: None}
+}
+
+/// The text written for an event: the formatter's text when one is set, and otherwise the output
+/// template, painted with the theme when colour is on.
+export fn render(options: &Options, event: &Log.Event) -> Str { textOf(options, &Parser.parse(options.outputTemplate), event) }
+
+/// The text written for an event through an already parsed output template.
+fn textOf(options: &Options, parsed: &Log.Template, event: &Log.Event) -> Str {
+  match options.formatter {
+    case Some(formatter) => formatter(event)
+    case None => Theme.paint(if options.colored { &options.theme } else { &Theme.none() }, &Output.render(parsed, event))
+  }
+}
+
+/// Whether an event goes to the error stream.
+export fn toErrors(options: &Options, level: Log.Level) -> Bool {
+  match options.standardErrorFromLevel {
+    case Some(minimum) => Levels.passes(level, minimum)
+    case None => false
+  }
+}
+
+/// A sink writing each event to standard output, or to standard error from the configured level.
+/// Writes are serialized so lines from different threads never interleave.
+export fn sink(options: Options) -> Sink.Sink {
+  let parsed = Parser.parse(options.outputTemplate)
+  let lock = Sync.mutex()
+  Sink.of(fn(event: &Log.Event) -> Result[(), Str] {
+      let text = textOf(&options, &parsed, event)
+      let printer = if toErrors(&options, event.level) { Out.bare().toStream(Out.Errors) } else { Out.bare() }
+      match Sync.withLock(&lock, fn() -> Result[(), Str] { Out.text(&printer, text) }) {
+        case Ok(written) => written
+        case Err(_) => Err("the console lock could not be taken")
+      }
+    })
+}

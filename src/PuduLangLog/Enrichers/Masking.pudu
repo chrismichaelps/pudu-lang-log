@@ -1,0 +1,64 @@
+/** @Log.Enrichers.Masking.Module — sensitive property values hidden before sinks */
+module PuduLangLog.Enrichers.Masking
+
+import Std.Regex as Regex
+import PuduLangLog.Domain.Masking as Masking
+import PuduLangLog.Enricher as Enricher
+import PuduLangLog as Log
+
+/// The text that replaces a hidden value unless another is given.
+export const MASK: Str = "***"
+
+/// Addresses of the form `name@domain.tld`.
+const EMAIL: Str = "[A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]\{2,\}"
+
+/// Card numbers: thirteen to nineteen digits, in groups separated by spaces or hyphens.
+const CARD_NUMBER: Str = "\\b[0-9]\{4\}(?:[ \\-]?[0-9]\{4\})\{2\}[ \\-]?[0-9]\{1,7\}\\b"
+
+/// International bank account numbers: country, check digits, and up to thirty letters and digits.
+const IBAN: Str = "\\b[A-Z]\{2\}[0-9]\{2\}[A-Z0-9]\{11,30\}\\b"
+
+/// Hides the value of every property, structure member, and dictionary entry of a listed name at
+/// any depth; names compare ignoring case.
+export fn properties(names: Array[Str], mask: Str) -> Enricher.Enricher {
+  Enricher.from(fn(event: Log.Event) -> Log.Event {
+      Log.Event {
+        ..event,
+        properties: event.properties.map(|property: Log.Property| Masking.property(&property, &names, mask))
+      }
+    })
+}
+
+/// Hides every match of the regular expressions inside property text at any depth and inside the
+/// failure's message, or answers why an expression does not compile.
+export fn patterns(expressions: Array[Str], mask: Str) -> Result[Enricher.Enricher, Str] {
+  var compiled: Array[Regex.Regex] = []
+  for expression in expressions {
+    match Regex.compile(expression) {
+      case Ok(regex) => { compiled = compiled.push(regex) }
+      case Err(problem) => { return Err("The pattern `" + expression + "` does not compile: " + Regex.explain(&problem)) }
+    }
+  }
+  Ok(Enricher.from(fn(event: Log.Event) -> Log.Event {
+        Log.Event {
+          ..event,
+          properties: event.properties.map(|property: Log.Property| Log.Property{name: property.name, value: Masking.text(&property.value, &compiled, mask)}),
+          failure: match event.failure {
+            case Some(problem) => Some(maskedFailure(&problem, &compiled, mask))
+            case None => None
+          }
+        }
+      }))
+}
+
+/// Hides e-mail addresses, card numbers, and international bank account numbers.
+export fn sensitive(mask: Str) -> Result[Enricher.Enricher, Str] { patterns([EMAIL, CARD_NUMBER, IBAN], mask) }
+
+/// A failure with the patterns hidden in its message and its causes' messages.
+fn maskedFailure(problem: &Log.Failure, compiled: &Array[Regex.Regex], mask: Str) -> Log.Failure {
+  let message = match Masking.text(&Log.Scalar(Log.Text(problem.message)), compiled, mask) {
+    case Log.Scalar(Log.Text(masked)) => masked
+    case _ => problem.message
+  }
+  Log.Failure{..*problem, message: message, causes: problem.causes.map(|cause: Log.Failure| maskedFailure(&cause, compiled, mask))}
+}

@@ -1,0 +1,77 @@
+/** @Test.Domain.Parser.Suite — template tokens, holes, and literal fallbacks */
+module PuduLangLog.Domain.ParserTest
+
+import Std.Io as Io
+import Std.Test as Test
+import PuduLangLog.Domain.Parser as Parser
+import PuduLangLog as Log
+
+/// A hole with only a name.
+fn hole(name: Str, raw: Str) -> Log.Hole {
+  Log.Hole{name: name, raw: raw, format: None, alignment: None, hint: Log.Default, position: None}
+}
+
+/// The tokens a text parses to.
+fn tokens(text: Str) -> Array[Log.Token] { Parser.parse(text).tokens }
+
+/// The single literal a text parses to.
+fn literal(text: Str) -> Array[Log.Token] { [Log.Literal(text)] }
+
+/// Runs the suite.
+fn main() -> Int {
+  let greeting = Parser.parse("Hello, \{Name\}!")
+  let checks = Test.suite("Domain.Parser", &[
+      Test.equals("empty text is one empty literal", &tokens(""), &[Log.Literal("")]),
+      Test.equals("empty text binds nothing", &Parser.parse("").binding, &Log.Unbound),
+      Test.equals("plain text is one literal", &tokens("Hello"), &literal("Hello")),
+      Test.equals("a hole between literals", &greeting.tokens, &[Log.Literal("Hello, "), Log.Placeholder(hole("Name", "\{Name\}")), Log.Literal("!")]),
+      Test.equals("the text is kept", &greeting.text, &"Hello, \{Name\}!"),
+      Test.equals("the holes are listed", &greeting.holes, &[hole("Name", "\{Name\}")]),
+      Test.equals("named holes bind by name", &greeting.binding, &Log.Named),
+      Test.equals("a doubled brace is one brace", &tokens("\{\{literal\}\}"), &literal("\{literal\}")),
+      Test.equals("tripled braces around a hole", &tokens("\{\{\{Name\}\}\}"), &[Log.Literal("\{"), Log.Placeholder(hole("Name", "\{Name\}")), Log.Literal("\}")]),
+      Test.equals("a lone closing brace is text", &tokens("a\}b"), &literal("a\}b")),
+      Test.equals("a doubled closing brace is one", &tokens("a\}\}b"), &literal("a\}b")),
+      Test.equals("an unclosed brace is text", &tokens("\{Name"), &literal("\{Name")),
+      Test.equals("a lone opening brace is text", &tokens("\{"), &literal("\{")),
+      Test.equals("text before an unclosed brace", &tokens("a \{b"), &[Log.Literal("a "), Log.Literal("\{b")]),
+      Test.equals("empty braces are text", &tokens("\{\}"), &literal("\{\}")),
+      Test.equals("destructuring hint", &tokens("\{@User\}"), &[Log.Placeholder(Log.Hole{..hole("User", "\{@User\}"), hint: Log.Destructure})]),
+      Test.equals("stringify hint", &tokens("\{$Data\}"), &[Log.Placeholder(Log.Hole{..hole("Data", "\{$Data\}"), hint: Log.Stringify})]),
+      Test.equals("a hint without a name is text", &tokens("\{@\}"), &literal("\{@\}")),
+      Test.equals("a format", &tokens("\{Count:000\}"), &[Log.Placeholder(Log.Hole{..hole("Count", "\{Count:000\}"), format: Some("000")})]),
+      Test.equals("an empty format is none", &tokens("\{Count:\}"), &[Log.Placeholder(hole("Count", "\{Count:\}"))]),
+      Test.equals("a format keeps later colons", &tokens("\{T:HH:mm\}"), &[Log.Placeholder(Log.Hole{..hole("T", "\{T:HH:mm\}"), format: Some("HH:mm")})]),
+      Test.equals("right alignment", &tokens("\{Name,10\}"), &[Log.Placeholder(Log.Hole{..hole("Name", "\{Name,10\}"), alignment: Some(Log.Alignment{left: false, width: 10})})]),
+      Test.equals("left alignment", &tokens("\{Name,-10\}"), &[Log.Placeholder(Log.Hole{..hole("Name", "\{Name,-10\}"), alignment: Some(Log.Alignment{left: true, width: 10})})]),
+      Test.equals("alignment then format", &tokens("\{Name,-3:u\}"), &[Log.Placeholder(Log.Hole{..hole("Name", "\{Name,-3:u\}"), alignment: Some(Log.Alignment{left: true, width: 3}), format: Some("u")})]),
+      Test.equals("a comma after the colon belongs to the format", &tokens("\{Name:u,3\}"), &[Log.Placeholder(Log.Hole{..hole("Name", "\{Name:u,3\}"), format: Some("u,3")})]),
+      Test.equals("an empty alignment is text", &(tokens("\{Name,\}"), tokens("\{Name,:u\}")), &(literal("\{Name,\}"), literal("\{Name,:u\}"))),
+      Test.equals("a plus sign is not an alignment", &tokens("\{Name,+5\}"), &literal("\{Name,+5\}")),
+      Test.equals("an alignment that is not a number is text", &(tokens("\{Name,a\}"), tokens("\{Name,-\}"), tokens("\{Name,--5\}"), tokens("\{Name, 5\}")), &(literal("\{Name,a\}"), literal("\{Name,-\}"), literal("\{Name,--5\}"), literal("\{Name, 5\}"))),
+      Test.equals("the largest width is an alignment", &tokens("\{Name,2147483647\}"), &[Log.Placeholder(Log.Hole{..hole("Name", "\{Name,2147483647\}"), alignment: Some(Log.Alignment{left: false, width: 2147483647})})]),
+      Test.equals("an alignment past the largest width is text", &tokens("\{Name,2147483648\}"), &literal("\{Name,2147483648\}")),
+      Test.equals("numbered holes bind by position", &Parser.parse("\{0\} \{1\}").binding, &Log.Positional),
+      Test.equals("a numbered hole records its position", &Parser.parse("\{12\}").holes, &[Log.Hole{..hole("12", "\{12\}"), position: Some(12)}]),
+      Test.equals("mixed holes bind by name", &Parser.parse("\{0\} \{Name\}").binding, &Log.Named),
+      Test.equals("a number too large for a position is a name", &Parser.parse("\{99999999999\}").holes, &[hole("99999999999", "\{99999999999\}")]),
+      Test.equals("digits then letters are text", &tokens("\{9x\}"), &literal("\{9x\}")),
+      Test.equals("a decimal number is text", &tokens("\{1.5\}"), &literal("\{1.5\}")),
+      Test.equals("spaces are text", &tokens("\{Na me\}"), &literal("\{Na me\}")),
+      Test.equals("an underscore starts a name", &Parser.parse("\{_x1\}").holes, &[hole("_x1", "\{_x1\}")]),
+      Test.equals("dotted names", &Parser.parse("\{User.Name\}").holes, &[hole("User.Name", "\{User.Name\}")]),
+      Test.equals("misplaced dots are text", &(tokens("\{a.\}"), tokens("\{.a\}"), tokens("\{a..b\}"), tokens("\{a.1\}")), &(literal("\{a.\}"), literal("\{.a\}"), literal("\{a..b\}"), literal("\{a.1\}"))),
+      Test.equals("a name may use letters beyond ASCII", &Parser.parse("\{Größe\}").holes, &[hole("Größe", "\{Größe\}")]),
+      Test.equals("punctuation in a name is text", &(tokens("\{a-b\}"), tokens("\{a@b\}")), &(literal("\{a-b\}"), literal("\{a@b\}"))),
+      Test.equals("a brace inside a hole ends it as text", &tokens("\{a\{b\}c"), &[Log.Literal("\{a\{b\}"), Log.Literal("c")]),
+      Test.equals("adjacent holes", &Parser.parse("\{A\}\{B\}").holes, &[hole("A", "\{A\}"), hole("B", "\{B\}")]),
+      Test.equals("a repeated name is two holes", &Parser.parse("\{A\} \{A\}").holes.length(), &2),
+      Test.that("a blank name is invalid", !Parser.isValidName("  ") && !Parser.isValidName("")),
+      Test.that("any other name is valid", Parser.isValidName("with space") && Parser.isValidName("x"))
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

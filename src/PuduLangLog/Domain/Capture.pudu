@@ -1,0 +1,202 @@
+/** @Log.Domain.Capture.Module — arguments bound to holes under capture policies */
+module PuduLangLog.Domain.Capture
+
+import Std.List as List
+import Std.Math as Math
+import Std.Option as Option
+import PuduLangLog.Domain.Display as Display
+import PuduLangLog.Domain.Json as Json
+import PuduLangLog.Domain.Properties as Properties
+import PuduLangLog as Log
+
+/** @Log.Domain.Capture.Policy — limits and rules applied while capturing */
+export type Policy = {
+  maximumDepth: Int,
+  maximumStringLength: Int,
+  maximumCollectionCount: Int,
+  scalars: Array[Str],
+  transforms: Array[Transform],
+  custom: Array[fn(&Log.Value) -> Option[Log.Value]]
+}
+
+/** @Log.Domain.Capture.Transform — a replacement for structures of one tag */
+export type Transform = { tag: Str, apply: fn(Log.Value) -> Log.Value }
+
+/** @Log.Domain.Capture.Bound — the properties bound and any problems met */
+export type Bound = { properties: Array[Log.Property], problems: Array[Str] }
+
+/// The largest limit, standing for no limit.
+export const UNLIMITED: Int = 2147483647
+
+/// Byte strings longer than this are captured as a hexadecimal prefix and their length.
+const LONGEST_BYTES: Int = 1024
+
+/// How many leading bytes a long byte string keeps.
+const KEPT_BYTES: Int = 16
+
+/// The self-log line for nesting past the maximum depth.
+const DEPTH_REACHED: Str = "Maximum destructuring depth reached."
+
+/// A depth of ten, and no limit on text length or collection size.
+export fn defaults() -> Policy {
+  Policy{maximumDepth: 10, maximumStringLength: UNLIMITED, maximumCollectionCount: UNLIMITED, scalars: [], transforms: [], custom: []}
+}
+
+/// A value captured under a hint: `Stringify` renders it to text, `Destructure` keeps structures,
+/// and `Default` keeps scalars and collections but renders structures to text. Limits apply at
+/// every depth.
+export fn capture(policy: &Policy, held: &Log.Value, hint: Log.Hint) -> Log.Value {
+  let (value, _cut) = captured(policy, held, hint, 1)
+  value
+}
+
+/// A value captured at a depth, and whether the depth limit cut part of it.
+fn captured(policy: &Policy, held: &Log.Value, hint: Log.Hint, depth: Int) -> (Log.Value, Bool) {
+  if depth > policy.maximumDepth { return (Log.Scalar(Log.Null), true) }
+  if hint == Log.Stringify { return (Log.Scalar(Log.Text(truncated(policy, stringified(held)))), false) }
+  match held {
+    case Log.Scalar(atom) => (Log.Scalar(scalarOf(policy, &atom)), false)
+    case Log.Sequence(items) => {
+      var members: Array[Log.Value] = []
+      var cut = false
+      for item in List.take(&items, policy.maximumCollectionCount) {
+        let (member, deeper) = captured(policy, &item, hint, depth + 1)
+        members = members.push(member)
+        cut = cut || deeper
+      }
+      (Log.Sequence(members), cut)
+    }
+    case Log.Dictionary(entries) => {
+      var members: Array[Log.Entry] = []
+      var cut = false
+      for entry in List.take(&entries, policy.maximumCollectionCount) {
+        let (member, deeper) = captured(policy, &entry.value, hint, depth + 1)
+        members = members.push(Log.Entry{key: scalarOf(policy, &entry.key), value: member})
+        cut = cut || deeper
+      }
+      (Log.Dictionary(members), cut)
+    }
+    case Log.Structure(shape) => structureOf(policy, held, &shape, hint, depth)
+  }
+}
+
+/// A structure captured under a hint: rendered to text unless destructured, replaced by the first
+/// custom rule or tag transform that answers, and otherwise kept with its members captured. A
+/// replacement is not replaced again; its members are captured as usual.
+fn structureOf(policy: &Policy, held: &Log.Value, shape: &Log.Structure, hint: Log.Hint, depth: Int) -> (Log.Value, Bool) {
+  let scalarTag = match shape.tag {
+    case Some(tag) => policy.scalars.contains(tag)
+    case None => false
+  }
+  if hint != Log.Destructure || scalarTag { return (Log.Scalar(Log.Text(truncated(policy, stringified(held)))), false) }
+  match replacementOf(policy, held, shape) {
+    case Some(Log.Structure(replaced)) => membersOf(policy, &replaced, depth)
+    case Some(replaced) => captured(policy, &replaced, Log.Destructure, depth)
+    case None => membersOf(policy, shape, depth)
+  }
+}
+
+/// The answer of the first custom rule that answers, or else of the transform for the tag.
+fn replacementOf(policy: &Policy, held: &Log.Value, shape: &Log.Structure) -> Option[Log.Value] {
+  for rule in policy.custom {
+    if let Some(replaced) = rule(held) { return Some(replaced) }
+  }
+  let tag = shape.tag ?
+  let transform = List.find(&policy.transforms, |candidate: Transform| candidate.tag == tag) ?
+  Some((transform.apply)(*held))
+}
+
+/// A structure kept with its members destructured one level deeper.
+fn membersOf(policy: &Policy, shape: &Log.Structure, depth: Int) -> (Log.Value, Bool) {
+  var members: Array[Log.Property] = []
+  var cut = false
+  for property in shape.properties {
+    let (member, deeper) = captured(policy, &property.value, Log.Destructure, depth + 1)
+    members = members.push(Log.Property{name: property.name, value: member})
+    cut = cut || deeper
+  }
+  (Log.Structure(Log.Structure{tag: shape.tag, properties: members}), cut)
+}
+
+/// A scalar with text truncated and long byte strings shortened to a readable prefix.
+fn scalarOf(policy: &Policy, atom: &Log.Scalar) -> Log.Scalar {
+  match atom {
+    case Log.Text(text) => Log.Text(truncated(policy, text))
+    case Log.Binary(bytes) => {
+      if bytes.length() <= LONGEST_BYTES { return *atom }
+      Log.Text(Json.hexOf(&bytes.take(KEPT_BYTES)) + "... (" + show(bytes.length()) + " bytes)")
+    }
+    case _ => *atom
+  }
+}
+
+/// A value as the text a stringified hole holds: text as it is, anything else as displayed.
+fn stringified(held: &Log.Value) -> Str {
+  match held {
+    case Log.Scalar(Log.Text(text)) => text
+    case _ => Display.plain(&Display.value(held, &Some("l")))
+  }
+}
+
+/// Text cut to the maximum length, ending in an ellipsis when cut.
+fn truncated(policy: &Policy, text: Str) -> Str {
+  if text.length() <= policy.maximumStringLength { return text }
+  text.take(Math.max(0, policy.maximumStringLength - 1)) + "…"
+}
+
+/// The template's holes bound to the arguments. Numbered templates bind by position; others bind
+/// left to right, and arguments beyond the holes are kept as `__0`, `__1`, and so on by index.
+export fn bind(policy: &Policy, template: &Log.Template, arguments: &Array[Log.Value]) -> Bound {
+  if arguments.isEmpty() {
+    let problems = if template.holes.isEmpty() { [] } else { ["Required properties not provided for: " + template.text] }
+    return Bound{properties: [], problems: problems}
+  }
+  match template.binding {
+    case Log.Unbound => Bound{properties: [], problems: ["Parameters provided for message template with no properties: " + template.text]}
+    case Log.Positional => positional(policy, template, arguments)
+    case Log.Named => named(policy, template, arguments)
+  }
+}
+
+/// Arguments bound to numbered holes by their numbers; unused arguments are dropped.
+fn positional(policy: &Policy, template: &Log.Template, arguments: &Array[Log.Value]) -> Bound {
+  var slots: Array[Option[Log.Property]] = arguments.map(|_argument: Log.Value| None)
+  var problems: Array[Str] = []
+  for hole in template.holes {
+    let position = Option.unwrapOr(hole.position, 0)
+    match List.get(arguments, position) {
+      case Some(argument) => {
+        let (held, cut) = captured(policy, &argument, hole.hint, 1)
+        if cut { problems = problems.push(DEPTH_REACHED) }
+        slots = List.take(&slots, position).push(Some(Log.Property{name: hole.name, value: held})).concat(List.drop(&slots, position + 1))
+      }
+      case None => { problems = problems.push("Unassigned positional value " + show(position) + " in: " + template.text) }
+    }
+  }
+  var properties: Array[Log.Property] = []
+  for slot in slots {
+    if let Some(property) = slot { properties = properties.push(property) }
+  }
+  if properties.length() != arguments.length() { problems = problems.push("Positional property count does not match parameter count: " + template.text) }
+  Bound{properties: properties, problems: problems}
+}
+
+/// Arguments bound to holes left to right; a repeated name keeps its last value.
+fn named(policy: &Policy, template: &Log.Template, arguments: &Array[Log.Value]) -> Bound {
+  var problems: Array[Str] = []
+  if List.any(&template.holes, |hole: Log.Hole| hole.position != None) { problems = problems.push("Message template is malformed: " + template.text) }
+  if template.holes.length() != arguments.length() { problems = problems.push("Named property count does not match parameter count: " + template.text) }
+  var properties: Array[Log.Property] = []
+  var index = 0
+  for argument in arguments {
+    let (name, hint) = match List.get(&template.holes, index) {
+      case Some(hole) => (hole.name, hole.hint)
+      case None => ("__" + show(index), Log.Default)
+    }
+    let (held, cut) = captured(policy, &argument, hint, 1)
+    if cut { problems = problems.push(DEPTH_REACHED) }
+    properties = Properties.put(&properties, name, held)
+    index = index + 1
+  }
+  Bound{properties: properties, problems: problems}
+}

@@ -1,0 +1,87 @@
+/** @Log.Domain.Output.Module — output templates rendered from events */
+module PuduLangLog.Domain.Output
+
+import Std.List as List
+import PuduLangLog.Domain.Display as Display
+import PuduLangLog.Domain.Levels as Levels
+import PuduLangLog.Domain.Padding as Padding
+import PuduLangLog.Domain.Properties as Properties
+import PuduLangLog as Log
+
+/// The line break the `NewLine` hole writes.
+export const NEW_LINE: Str = "\n"
+
+/// The event rendered through an output template. `Timestamp`, `UtcTimestamp`, `Level`,
+/// `Message`, `Exception`, `NewLine`, `Properties`, `TraceId`, and `SpanId` name parts of the
+/// event; any other hole names a property and writes nothing when it is absent.
+export fn render(output: &Log.Template, event: &Log.Event) -> Array[Display.Piece] {
+  var pieces: Array[Display.Piece] = []
+  for token in output.tokens {
+    match token {
+      case Log.Literal(text) => { pieces = pieces.push(Display.Piece{style: Display.Tertiary, text: text}) }
+      case Log.Placeholder(hole) => { pieces = pieces.concat(Display.aligned(&part(output, &hole, event), &hole.alignment)) }
+    }
+  }
+  pieces
+}
+
+/// The pieces one output hole stands for, before alignment.
+fn part(output: &Log.Template, hole: &Log.Hole, event: &Log.Event) -> Array[Display.Piece] {
+  match hole.name {
+    case "Level" => [Display.Piece{style: Display.LevelStyle(event.level), text: Levels.moniker(event.level, &hole.format)}]
+    case "Message" => Display.message(&event.template, &event.properties, &hole.format)
+    case "Timestamp" => [secondary(Display.scalar(&Log.Moment(event.timestamp), &hole.format).text)]
+    case "UtcTimestamp" => [secondary(Display.scalar(&Log.Moment(Log.Timestamp{..event.timestamp, offset: 0}), &hole.format).text)]
+    case "NewLine" => [plain(NEW_LINE)]
+    case "Exception" => failure(&event.failure)
+    case "TraceId" => [plain(optional(&event.traceId))]
+    case "SpanId" => [plain(optional(&event.spanId))]
+    case "Properties" => properties(output, event, &hole.format)
+    case name => match Properties.find(&event.properties, name) {
+      case Some(Log.Scalar(Log.Text(text))) => [Display.Piece{style: Display.StringStyle, text: Padding.cased(text, &hole.format)}]
+      case Some(found) => Display.value(&found, &hole.format)
+      case None => []
+    }
+  }
+}
+
+/// Plain text.
+fn plain(text: Str) -> Display.Piece { Display.Piece{style: Display.Plain, text: text} }
+
+/// Secondary text.
+fn secondary(text: Str) -> Display.Piece { Display.Piece{style: Display.Secondary, text: text} }
+
+/// Optional text, empty when absent.
+fn optional(text: &Option[Str]) -> Str {
+  match text {
+    case Some(given) => given
+    case None => ""
+  }
+}
+
+/// A failure's text followed by a line break, trace lines in the secondary style; nothing when
+/// the event has no failure.
+fn failure(problem: &Option[Log.Failure]) -> Array[Display.Piece] {
+  let found = match problem {
+    case Some(given) => given
+    case None => { return [] }
+  }
+  Display.failure(&found).split("\n").map(|line: Str| if line.startsWith("   at ") { secondary(line + NEW_LINE) } else { plain(line + NEW_LINE) })
+}
+
+/// The properties named neither in the message template nor in the output template, as a
+/// structure, or as a JSON object when the format contains `j`.
+fn properties(output: &Log.Template, event: &Log.Event, format: &Option[Str]) -> Array[Display.Piece] {
+  let rest = event.properties.filter(|property: Log.Property| !mentions(&event.template, property.name) && !mentions(output, property.name))
+  let shape = Log.Structure(Log.Structure{tag: None, properties: rest})
+  let asJson = match format {
+    case Some(given) => given.contains("j")
+    case None => false
+  }
+  if asJson { [Display.json(&shape)] } else { Display.value(&shape, &None) }
+}
+
+/// Whether a template has a hole of the name.
+fn mentions(template: &Log.Template, name: Str) -> Bool {
+  List.any(&template.holes, |hole: Log.Hole| hole.name == name)
+}

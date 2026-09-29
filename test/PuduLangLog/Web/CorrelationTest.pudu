@@ -1,0 +1,64 @@
+/** @Test.Web.Correlation.Suite — one identifier carried across a request */
+module PuduLangLog.Web.CorrelationTest
+
+import Std.Http.Server.Route as Route
+import Std.Http as Web
+import Std.Io as Io
+import Std.Map as Map
+import Std.Option as Option
+import Std.Sync as Sync
+import Std.Test as Test
+import PuduLangLog.Configuration as Configuration
+import PuduLangLog.Event as Event
+import PuduLangLog as Log
+import PuduLangLog.Logger as Logger
+import PuduLangLog.Sinks.Memory as Memory
+import PuduLangLog.Value as Value
+import PuduLangLog.Web.Correlation as Correlation
+import PuduLangLog.Web.RequestLogging as RequestLogging
+
+/// A routed request with headers.
+fn request(headers: Array[(Str, Str)]) -> Route.Request {
+  Route.Request{message: Web.Request{..Web.request(Web.Get, "/orders"), headers: headers}, path: "/orders", params: Map.empty(), query: Map.empty(), peer: "127.0.0.1"}
+}
+
+/// A response with headers and no body.
+fn answer(headers: Array[(Str, Str)]) -> Web.Response { Web.Response{status: Web.status(200), headers: headers, body: "", binaryBody: None} }
+
+/// Runs the suite.
+fn main() -> Int {
+  let fixed = Correlation.Options{..Correlation.defaults(), generate: fn() -> Str { "generated" }}
+  let seen = Sync.cell("")
+  let handler = fn(incoming: Route.Request) -> Web.Response {
+    let _stored = Sync.set(&seen, Option.unwrapOr(Route.header(&incoming, Correlation.HEADER), "missing"))
+    answer([])
+  }
+  let middleware = Correlation.middleware(fixed)
+  let brought = middleware(request([("X-Correlation-ID", " abc ")]), handler)
+  let broughtSeen = Sync.get(&seen)
+  let made = middleware(request([("x-correlation-id", "  ")]), handler)
+  let madeSeen = Sync.get(&seen)
+  let own = middleware(request([]), fn(_incoming: Route.Request) -> Web.Response { answer([("X-Correlation-Id", "mine")]) })
+  let silent = Correlation.middleware(Correlation.Options{..fixed, echo: false})(request([]), handler)
+  let memory = Memory.create()
+  let logger = Configuration.create().writeTo(Memory.sink(&memory)).createLogger()
+  Correlation.loggerFor(&logger, &request([("x-correlation-id", "r1")]), &fixed).information("inside", [])
+  Correlation.loggerFor(&logger, &request([]), &fixed).information("outside", [])
+  let logging = RequestLogging.middleware(&logger, RequestLogging.Options{..RequestLogging.defaults(), enrich: Correlation.enrich(fixed)})
+  let _logged = logging(request([("x-correlation-id", "r2")]), fn(_incoming: Route.Request) -> Web.Response { answer([]) })
+  let events = Memory.events(&memory)
+  let random = [Correlation.randomIdentifier(), Correlation.randomIdentifier()]
+  let checks = Test.suite("Web.Correlation", &[
+      Test.equals("a brought identifier reaches the handler as sent and is echoed trimmed", &(broughtSeen, Web.header(&brought.headers, "x-correlation-id")), &(Ok(" abc "), Some("abc"))),
+      Test.equals("a blank identifier is replaced by a generated one", &(madeSeen, Web.header(&made.headers, "x-correlation-id")), &(Ok("generated"), Some("generated"))),
+      Test.equals("a response's own header is kept", &own.headers, &[("X-Correlation-Id", "mine")]),
+      Test.equals("echo can be turned off", &silent.headers, &[]),
+      Test.equals("a request logger carries the identifier", &events.map(|event: Log.Event| Event.property(&event, "CorrelationId")), &[Some(Value.text("r1")), None, Some(Value.text("r2"))]),
+      Test.that("random identifiers are 32 hexadecimal digits and differ", random[0] != random[1] && random[0].length() == 32 && random[0].chars().filter(|digit: Char| !"0123456789abcdef".contains(digit.toText())).isEmpty())
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

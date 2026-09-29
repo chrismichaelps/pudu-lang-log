@@ -1,0 +1,113 @@
+/** @Log.Sinks.Map.Router — one sink per key, opened on first use */
+module PuduLangLog.Sinks.Map
+
+import Std.List as List
+import Std.Sync as Sync
+import PuduLangLog.Domain.Display as Display
+import PuduLangLog.Domain.Properties as Properties
+import PuduLangLog.Domain.Recency as Recency
+import PuduLangLog as Log
+import PuduLangLog.Sink as Sink
+
+/** @Log.Sinks.Map.Options — the key of an event and the sink for a key */
+export type Options = { keyOf: fn(&Log.Event) -> Str, create: fn(Str) -> Sink.Sink, limit: Option[Int] }
+
+/** @Log.Sinks.Map.Open — a key and the sink opened for it */
+type Open = { key: Str, sink: Sink.Sink }
+
+/** @Log.Sinks.Map.State — the open sinks, least recently used first */
+type State = { open: Array[Open], listeners: Array[Sink.Listener], closed: Bool }
+
+/// Options routing by a key function and opening sinks with `create`, keeping every sink open.
+export fn defaults(keyOf: fn(&Log.Event) -> Str, create: fn(Str) -> Sink.Sink) -> Options { Options{keyOf: keyOf, create: create, limit: None} }
+
+/// A key function reading a property: text as it is, other values as displayed, and `fallback`
+/// when the event lacks the property.
+export fn byProperty(name: Str, fallback: Str) -> fn(&Log.Event) -> Str {
+  fn(event: &Log.Event) -> Str {
+    match Properties.find(&event.properties, name) {
+      case Some(Log.Scalar(Log.Text(text))) => text
+      case Some(held) => Display.plain(&Display.value(&held, &None))
+      case None => fallback
+    }
+  }
+}
+
+/// A sink handing each event to the sink of its key, opening that sink on first use. With a limit,
+/// the least recently used sinks beyond it are flushed and closed, and reopened when their key
+/// returns. Listeners attached to the map reach every sink it opens.
+export fn sink(options: Options) -> Sink.Sink {
+  let none: Array[Open] = []
+  let noListeners: Array[Sink.Listener] = []
+  let state = Sync.cell(State{open: none, listeners: noListeners, closed: false})
+  let lock = Sync.mutex()
+  Sink.Sink {
+    emit: fn(event: &Log.Event) -> Result[(), Str] {
+      match Sync.withLock(&lock, fn() -> Result[(), Str] { emitLocked(&options, &state, event) }) {
+        case Ok(outcome) => outcome
+        case Err(_) => Err("The sink map lock failed")
+      }
+    },
+    flush: fn() -> () {
+      let _flushed = Sync.withLock(&lock, fn() -> () { for entry in stateOf(&state).open { (entry.sink.flush)() } })
+    },
+    close: fn() -> () {
+      let _closed = Sync.withLock(&lock, fn() -> () {
+          let current = stateOf(&state)
+          for entry in current.open { retire(&entry) }
+          let _stored = Sync.set(&state, State{..current, open: none, closed: true})
+        })
+    },
+    attach: fn(listener: Sink.Listener) -> () {
+      let _attached = Sync.withLock(&lock, fn() -> () {
+          let current = stateOf(&state)
+          for entry in current.open { (entry.sink.attach)(listener) }
+          let _stored = Sync.set(&state, State{..current, listeners: current.listeners.push(listener)})
+        })
+    }
+  }
+}
+
+/// The event emitted to its key's sink, opening it and retiring the least recently used beyond the
+/// limit; a closed map drops the event.
+fn emitLocked(options: &Options, state: &Sync.Cell[State], event: &Log.Event) -> Result[(), Str] {
+  let current = stateOf(state)
+  if current.closed { return Ok(()) }
+  let key = (options.keyOf)(event)
+  let target = match List.find(&current.open, |entry: Open| entry.key == key) {
+    case Some(found) => found
+    case None => opened(options, &current.listeners, key)
+  }
+  let others = current.open.filter(|entry: Open| entry.key != key)
+  let order = Recency.touch(&others.map(|entry: Open| entry.key), key)
+  let retired = match options.limit {
+    case Some(limit) => Recency.overflow(&order, limit)
+    case None => []
+  }
+  let outcome = (target.sink.emit)(event)
+  let kept = others.push(target)
+  for entry in kept.filter(|entry: Open| retired.contains(entry.key)) { retire(&entry) }
+  let _stored = Sync.set(state, State{..current, open: kept.filter(|entry: Open| !retired.contains(entry.key))})
+  outcome
+}
+
+/// A newly opened sink for a key with the map's listeners attached.
+fn opened(options: &Options, listeners: &Array[Sink.Listener], key: Str) -> Open {
+  let created = (options.create)(key)
+  for listener in listeners { (created.attach)(listener) }
+  Open{key: key, sink: created}
+}
+
+/// A sink flushed and closed.
+fn retire(entry: &Open) -> () {
+  (entry.sink.flush)()
+  (entry.sink.close)()
+}
+
+/// The map's state.
+fn stateOf(state: &Sync.Cell[State]) -> State {
+  match Sync.get(state) {
+    case Ok(current) => current
+    case Err(_) => State{open: [], listeners: [], closed: true}
+  }
+}

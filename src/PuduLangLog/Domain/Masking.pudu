@@ -1,0 +1,81 @@
+/** @Log.Domain.Masking.Module — sensitive members and text hidden in values */
+module PuduLangLog.Domain.Masking
+
+import Std.Regex as Regex
+import PuduLangLog as Log
+
+/// The value with every structure member and dictionary entry of a listed name, at any depth,
+/// replaced by the mask text; names compare ignoring case.
+export fn members(held: &Log.Value, names: &Array[Str], mask: Str) -> Log.Value {
+  match held {
+    case Log.Scalar(_) => *held
+    case Log.Sequence(items) => Log.Sequence(items.map(|item: Log.Value| members(&item, names, mask)))
+    case Log.Structure(shape) => Log.Structure(Log.Structure {
+        ..shape,
+        properties: shape.properties.map(|member: Log.Property| property(&member, names, mask))
+      })
+    case Log.Dictionary(entries) => Log.Dictionary(entries.map(|entry: Log.Entry| Log.Entry {
+          key: entry.key,
+          value: match entry.key {
+            case Log.Text(key) => if listed(names, key) { Log.Scalar(Log.Text(mask)) } else { members(&entry.value, names, mask) }
+            case _ => members(&entry.value, names, mask)
+          }
+        }))
+  }
+}
+
+/// The property with its value replaced by the mask text when its name is listed, and otherwise
+/// with its listed members hidden.
+export fn property(named: &Log.Property, names: &Array[Str], mask: Str) -> Log.Property {
+  Log.Property{name: named.name, value: if listed(names, named.name) { Log.Scalar(Log.Text(mask)) } else { members(&named.value, names, mask) }}
+}
+
+/// The value with every match of the patterns inside its text, at any depth, replaced by the mask
+/// text. Keys and other scalars are kept.
+export fn text(held: &Log.Value, patterns: &Array[Regex.Regex], mask: Str) -> Log.Value {
+  match held {
+    case Log.Scalar(Log.Text(written)) => {
+      var masked = written
+      for pattern in patterns { masked = Regex.replaceAll(&pattern, masked, mask) }
+      Log.Scalar(Log.Text(masked))
+    }
+    case Log.Scalar(_) => *held
+    case Log.Sequence(items) => Log.Sequence(items.map(|item: Log.Value| text(&item, patterns, mask)))
+    case Log.Structure(shape) => Log.Structure(Log.Structure{..shape, properties: shape.properties.map(|member: Log.Property| Log.Property{name: member.name, value: text(&member.value, patterns, mask)})})
+    case Log.Dictionary(entries) => Log.Dictionary(entries.map(|entry: Log.Entry| Log.Entry{key: entry.key, value: text(&entry.value, patterns, mask)}))
+  }
+}
+
+/// A structure of the tag without its listed members, or none for any other value; names compare
+/// ignoring case.
+export fn ignoring(held: &Log.Value, tag: Str, names: &Array[Str]) -> Option[Log.Value] {
+  let shape = tagged(held, tag) ?
+  Some(Log.Structure(Log.Structure{..shape, properties: shape.properties.filter(|member: Log.Property| !listed(names, member.name))}))
+}
+
+/// A structure of the tag with its listed members replaced by the mask text, or none for any other
+/// value; names compare ignoring case.
+export fn masking(held: &Log.Value, tag: Str, names: &Array[Str], mask: Str) -> Option[Log.Value] {
+  let shape = tagged(held, tag) ?
+  Some(Log.Structure(Log.Structure {
+        ..shape,
+        properties: shape.properties.map(|member: Log.Property| if listed(names, member.name) { Log.Property{name: member.name, value: Log.Scalar(Log.Text(mask))} } else { member })
+      }))
+}
+
+/// The structure of a value when it carries the tag.
+fn tagged(held: &Log.Value, tag: Str) -> Option[Log.Structure] {
+  match held {
+    case Log.Structure(shape) => if shape.tag == Some(tag) { Some(shape) } else { None }
+    case _ => None
+  }
+}
+
+/// Whether a name is listed, ignoring case.
+fn listed(names: &Array[Str], name: Str) -> Bool {
+  let lowered = name.toLower()
+  for candidate in names {
+    if candidate.toLower() == lowered { return true }
+  }
+  false
+}

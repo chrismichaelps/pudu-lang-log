@@ -1,0 +1,39 @@
+/** @Test.Domain.Masking.Suite — hiding members and text inside values */
+module PuduLangLog.Domain.MaskingTest
+
+import Std.Io as Io
+import Std.Regex as Regex
+import Std.Result as Result
+import Std.Test as Test
+import PuduLangLog.Domain.Masking as Masking
+import PuduLangLog as Log
+import PuduLangLog.Value as Value
+
+/// Runs the suite.
+fn main() -> Int {
+  let user = Value.structure("User", [("Name", Value.text("Ada")), ("password", Value.text("s3cret")), ("Card", Value.object([("Pin", Value.int(1234)), ("Last", Value.text("9876"))]))])
+  let listed = ["Password", "pin"]
+  let digits = Result.unwrapOr(Regex.compile("[0-9]\{4\}"), Regex.unmatchable())
+  let letters = Result.unwrapOr(Regex.compile("[a-c]"), Regex.unmatchable())
+  let nested = Value.list([Value.text("pin 1234 and 5678"), Value.int(1234), Value.dictionary([("k", Value.text("0000"))]), Value.object([("m", Value.text("x1111"))])])
+  let checks = Test.suite("Domain.Masking", &[
+      Test.equals("listed members are hidden at any depth, ignoring case", &Masking.members(&user, &listed, "***"), &Value.structure("User", [("Name", Value.text("Ada")), ("password", Value.text("***")), ("Card", Value.object([("Pin", Value.text("***")), ("Last", Value.text("9876"))]))])),
+      Test.equals("sequences and dictionaries are searched", &Masking.members(&Value.list([Value.dictionary([("PIN", Value.int(1)), ("x", Value.int(2))])]), &listed, "#"), &Value.list([Value.dictionary([("PIN", Value.text("#")), ("x", Value.int(2))])])),
+      Test.equals("dictionaries keyed by other scalars are searched below", &Masking.members(&Value.keyed([(Log.Integer(1), Value.object([("pin", Value.int(3))]))]), &listed, "#"), &Value.keyed([(Log.Integer(1), Value.object([("pin", Value.text("#"))]))])),
+      Test.equals("scalars are kept", &Masking.members(&Value.int(5), &listed, "#"), &Value.int(5)),
+      Test.equals("a listed property is hidden whole", &Masking.property(&Value.property("PASSWORD", user), &listed, "#"), &Value.property("PASSWORD", Value.text("#"))),
+      Test.equals("an unlisted property keeps its unlisted members", &Masking.property(&Value.property("Who", Value.object([("a", Value.int(1))])), &listed, "#"), &Value.property("Who", Value.object([("a", Value.int(1))]))),
+      Test.equals("patterns hide matches inside text at any depth", &Masking.text(&nested, &[digits], "*"), &Value.list([Value.text("pin * and *"), Value.int(1234), Value.dictionary([("k", Value.text("*"))]), Value.object([("m", Value.text("x*"))])])),
+      Test.equals("every pattern applies in turn", &Masking.text(&Value.text("abc 1234 d"), &[digits, letters], "_"), &Value.text("___ _ d")),
+      Test.equals("no pattern keeps text", &Masking.text(&Value.text("1234"), &[], "_"), &Value.text("1234")),
+      Test.equals("ignoring members of a tag", &Masking.ignoring(&user, "User", &listed), &Some(Value.structure("User", [("Name", Value.text("Ada")), ("Card", Value.object([("Pin", Value.int(1234)), ("Last", Value.text("9876"))]))]))),
+      Test.equals("ignoring leaves other tags and values alone", &(Masking.ignoring(&user, "Order", &listed), Masking.ignoring(&Value.object([("password", Value.int(1))]), "User", &listed), Masking.ignoring(&Value.int(1), "User", &listed)), &(None, None, None)),
+      Test.equals("masking members of a tag keeps their places", &Masking.masking(&user, "User", &["name"], "?"), &Some(Value.structure("User", [("Name", Value.text("?")), ("password", Value.text("s3cret")), ("Card", Value.object([("Pin", Value.int(1234)), ("Last", Value.text("9876"))]))]))),
+      Test.equals("masking leaves other tags alone", &Masking.masking(&user, "Order", &["name"], "?"), &None)
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

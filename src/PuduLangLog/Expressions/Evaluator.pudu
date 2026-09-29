@@ -1,0 +1,232 @@
+/** @Log.Expressions.Evaluator.Engine — expressions evaluated against an event */
+module PuduLangLog.Expressions.Evaluator
+
+import Std.Decimal as Decimal
+import Std.List as List
+import Std.Math.Float as Float
+import Std.Option as Option
+import PuduLangLog.Domain.Display as Display
+import PuduLangLog.Domain.EventId as EventId
+import PuduLangLog.Domain.Levels as Levels
+import PuduLangLog.Domain.Properties as Properties
+import PuduLangLog.Expressions.Functions as Functions
+import PuduLangLog.Expressions.Syntax as Syntax
+import PuduLangLog.Expressions.Values as Values
+import PuduLangLog as Log
+
+/** @Log.Expressions.Evaluator.Scope — the event, bound names, and the present moment */
+export type Scope = { event: Log.Event, locals: Array[(Str, Log.Value)], now: Log.Timestamp, referenced: Array[Str] }
+
+/// The within of an event with no bound names.
+export fn scopeOf(event: &Log.Event, now: Log.Timestamp) -> Scope { Scope{event: *event, locals: [], now: now, referenced: []} }
+
+/// The value of an expression, or none when it is undefined.
+export fn evaluate(expression: &Syntax.Expression, within: &Scope) -> Option[Log.Value] {
+  match expression {
+    case Syntax.Constant(held) => Some(held)
+    case Syntax.Name(name) => nameOf(name, within)
+    case Syntax.Member(target, name) => Functions.elementAt(&evaluate(&target, within) ?, &Log.Scalar(Log.Text(name)), false)
+    case Syntax.Index(target, key) => Functions.elementAt(&evaluate(&target, within) ?, &evaluate(&key, within) ?, false)
+    case Syntax.Wildcard(_, _) => None
+    case Syntax.Call(name, arguments, ignoring) => {
+      if let Some(expanded) = comprehension(expression, within) { return expanded }
+      if name == "inspect" && arguments == [Syntax.Name("@x")] { return failureOf(&within.event.failure) }
+      let values = arguments.map(|argument: Syntax.Expression| evaluate(&argument, within))
+      if name == "rest" { return restOf(within, Values.isTrue(&Option.flatten(List.first(&values)))) }
+      Functions.call(name, &values, ignoring, &within.now)
+    }
+    case Syntax.Unary(operator, operand) => {
+      let held = evaluate(&operand, within)
+      if operator == "not" {
+        return match held {
+          case Some(Log.Scalar(Log.Boolean(flag))) => Values.boolean(!flag)
+          case _ => None
+        }
+      }
+      Values.number(Decimal.zero() - Values.decimalOf(&held) ?)
+    }
+    case Syntax.Binary(operator, left, right, ignoring) => {
+      if let Some(expanded) = comprehension(expression, within) { return expanded }
+      binary(operator, &left, &right, ignoring, within)
+    }
+    case Syntax.ArrayOf(elements) => {
+      var items: Array[Log.Value] = []
+      for element in elements {
+        match element {
+          case Syntax.Item(item) => { if let Some(held) = evaluate(&item, within) { items = items.push(held) } }
+          case Syntax.SpreadItems(spread) => { items = items.concat(Option.unwrapOr(Values.itemsOf(&evaluate(&spread, within)), [])) }
+        }
+      }
+      Some(Log.Sequence(items))
+    }
+    case Syntax.ObjectOf(fields) => {
+      var members: Array[Log.Property] = []
+      for field in fields {
+        match field {
+          case Syntax.Pair(name, held) => {
+            members = match evaluate(&held, within) {
+              case Some(found) => Properties.put(&members, name, found)
+              case None => Properties.remove(&members, name)
+            }
+          }
+          case Syntax.SpreadMembers(spread) => {
+            if let Some(Log.Structure(shape)) = evaluate(&spread, within) {
+              for member in shape.properties { members = Properties.put(&members, member.name, member.value) }
+            }
+          }
+        }
+      }
+      Some(Log.Structure(Log.Structure{tag: None, properties: members}))
+    }
+    case Syntax.Conditional(condition, then, otherwise) => if Values.isTrue(&evaluate(&condition, within)) { evaluate(&then, within) } else { evaluate(&otherwise, within) }
+  }
+}
+
+/// A name's value: a bound name first, then a built-in `@` property, then an event property.
+fn nameOf(name: Str, within: &Scope) -> Option[Log.Value] {
+  if let Some(bound) = List.find(&within.locals, |local: (Str, Log.Value)| local[0] == name) { return Some(bound[1]) }
+  let event = &within.event
+  match name {
+    case "@t" => Some(Log.Scalar(Log.Moment(event.timestamp)))
+    case "@m" => Values.text(Display.plain(&Display.message(&event.template, &event.properties, &Some("l"))))
+    case "@mt" => Values.text(event.template.text)
+    case "@l" => Values.text(Levels.name(event.level))
+    case "@x" => Values.text(Display.failure(&event.failure ?))
+    case "@p" => Some(Log.Structure(Log.Structure{tag: None, properties: event.properties}))
+    case "@i" => Some(Log.Scalar(Log.Integer(Option.unwrapOr(convertInteger[Int](EventId.compute(event.template.text)), 0))))
+    case "@r" => Some(Log.Sequence(event.template.holes.filter(|hole: Log.Hole| hole.format != None).map(|hole: Log.Hole| Log.Scalar(Log.Text(Display.plain(&Display.hole(&hole, &event.properties, false, false)))))))
+    case "@tr" => Values.text(event.traceId ?)
+    case "@sp" => Values.text(event.spanId ?)
+    case _ => Properties.find(&event.properties, name)
+  }
+}
+
+/// The event's properties that the template does not name, and when `deep` also those the message
+/// template names.
+fn restOf(within: &Scope, deep: Bool) -> Option[Log.Value] {
+  let named = within.event.template.holes.map(|hole: Log.Hole| hole.name)
+  let kept = within.event.properties.filter(|property: Log.Property| !within.referenced.contains(property.name) && !(deep && named.contains(property.name)))
+  Some(Log.Structure(Log.Structure{tag: None, properties: kept}))
+}
+
+/// A failure as a structure of its kind, message, trace, and causes.
+fn failureOf(problem: &Option[Log.Failure]) -> Option[Log.Value] {
+  let found = (*problem) ?
+  Some(Log.Structure(Log.Structure {
+        tag: Some(found.kind),
+        properties: [
+          Log.Property{name: "Kind", value: Log.Scalar(Log.Text(found.kind))},
+          Log.Property{name: "Message", value: Log.Scalar(Log.Text(found.message))},
+          Log.Property{name: "Trace", value: Log.Sequence(found.trace.map(|line: Str| Log.Scalar(Log.Text(line))))},
+          Log.Property{name: "Causes", value: Log.Sequence(found.causes.map(|cause: Log.Failure| Option.unwrapOr(failureOf(&Some(cause)), Log.Scalar(Log.Null))))}
+        ]
+      }))
+}
+
+/// A binary operator applied to its operands.
+fn binary(operator: Str, left: &Syntax.Expression, right: &Syntax.Expression, ignoring: Bool, within: &Scope) -> Option[Log.Value] {
+  if operator == "and" { return Values.boolean(Values.isTrue(&evaluate(left, within)) && Values.isTrue(&evaluate(right, within))) }
+  if operator == "or" { return Values.boolean(Values.isTrue(&evaluate(left, within)) || Values.isTrue(&evaluate(right, within))) }
+  let first = evaluate(left, within)
+  if operator == "is null" { return Values.boolean(first == None || first == Some(Log.Scalar(Log.Null))) }
+  let second = evaluate(right, within)
+  match operator {
+    case "=" => Values.equals(&first, &second, ignoring)
+    case "<>" => Option.map(Values.equals(&first, &second, ignoring), |equal: Log.Value| Log.Scalar(Log.Boolean(equal != Log.Scalar(Log.Boolean(true)))))
+    case "like" => Values.boolean(Values.like(Values.textOf(&first) ?, Values.textOf(&second) ?, ignoring))
+    case "in" => {
+      let wanted = first ?
+      Values.boolean(List.any(&Values.itemsOf(&second) ?, |item: Log.Value| Values.equal(&wanted, &item, ignoring)))
+    }
+    case "+" => Values.number(Values.decimalOf(&first) ? + Values.decimalOf(&second) ?)
+    case "-" => Values.number(Values.decimalOf(&first) ? - Values.decimalOf(&second) ?)
+    case "*" => Values.number(Values.decimalOf(&first) ? * Values.decimalOf(&second) ?)
+    case "/" => Values.number(Decimal.divideHalfEven(Values.decimalOf(&first) ?, Values.decimalOf(&second) ?, 28) ?)
+    case "%" => remainder(&first, &second)
+    case "^" => {
+      let base = Decimal.toFloat64(Values.decimalOf(&first) ?)
+      let exponent = Decimal.toFloat64(Values.decimalOf(&second) ?)
+      Some(Log.Scalar(Log.Real(Float.powf(base, exponent) ?)))
+    }
+    case _ => Values.compare(operator, &first, &second)
+  }
+}
+
+/// The remainder of two numbers, undefined for a zero divisor.
+fn remainder(left: &Option[Log.Value], right: &Option[Log.Value]) -> Option[Log.Value] {
+  let dividend = Values.decimalOf(left) ?
+  let divisor = Values.decimalOf(right) ?
+  let quotient = Decimal.truncate(Decimal.divideHalfEven(dividend, divisor, 28) ?)
+  Values.number(dividend - quotient * divisor)
+}
+
+/// A comparison or call over a wildcard, `Items[?].Price > 10` or `Tags[*] like 'a%'`, evaluated for
+/// each element: true when any (`?`) or every (`*`) element makes it true. None when the node holds
+/// no wildcard.
+fn comprehension(expression: &Syntax.Expression, within: &Scope) -> Option[Option[Log.Value]] {
+  let (target, quantifier) = wildcardIn(expression) ?
+  let elements = match evaluate(&target, within) {
+    case Some(Log.Sequence(items)) => items
+    case Some(Log.Structure(shape)) => shape.properties.map(|member: Log.Property| member.value)
+    case _ => { return Some(Values.boolean(false)) }
+  }
+  let results = elements.map(|element: Log.Value| Values.isTrue(&evaluate(&replaced(expression, &element), within)))
+  Some(Values.boolean(if quantifier == Syntax.AnyOf { List.any(&results, |held: Bool| held) } else { List.all(&results, |held: Bool| held) }))
+}
+
+/// The first wildcard reachable from a node's operands through member accesses and indexers.
+fn wildcardIn(expression: &Syntax.Expression) -> Option[(Syntax.Expression, Syntax.Quantifier)] {
+  let operands = match expression {
+    case Syntax.Binary(_, left, right, _) => [left, right]
+    case Syntax.Call(_, arguments, _) => arguments
+    case _ => []
+  }
+  for operand in operands {
+    if let Some(found) = chainWildcard(&operand) { return Some(found) }
+  }
+  None
+}
+
+/// The wildcard at the root of a chain of member accesses and indexers.
+fn chainWildcard(expression: &Syntax.Expression) -> Option[(Syntax.Expression, Syntax.Quantifier)] {
+  match expression {
+    case Syntax.Wildcard(target, quantifier) => Some((target, quantifier))
+    case Syntax.Member(target, _) => chainWildcard(&target)
+    case Syntax.Index(target, _) => chainWildcard(&target)
+    case _ => None
+  }
+}
+
+/// The node with its first reachable wildcard replaced by an element.
+fn replaced(expression: &Syntax.Expression, element: &Log.Value) -> Syntax.Expression {
+  match expression {
+    case Syntax.Binary(operator, left, right, ignoring) => {
+      if chainWildcard(&left) != None { return Syntax.Binary(operator, substitute(&left, element), right, ignoring) }
+      Syntax.Binary(operator, left, substitute(&right, element), ignoring)
+    }
+    case Syntax.Call(name, arguments, ignoring) => {
+      var done = false
+      var updated: Array[Syntax.Expression] = []
+      for argument in arguments {
+        if !done && chainWildcard(&argument) != None {
+          updated = updated.push(substitute(&argument, element))
+          done = true
+        } else {
+          updated = updated.push(argument)
+        }
+      }
+      Syntax.Call(name, updated, ignoring)
+    }
+    case _ => *expression
+  }
+}
+
+/// A chain with its wildcard replaced by an element.
+fn substitute(expression: &Syntax.Expression, element: &Log.Value) -> Syntax.Expression {
+  match expression {
+    case Syntax.Wildcard(_, _) => Syntax.Constant(*element)
+    case Syntax.Member(target, name) => Syntax.Member(substitute(&target, element), name)
+    case Syntax.Index(target, key) => Syntax.Index(substitute(&target, element), key)
+    case _ => *expression
+  }
+}

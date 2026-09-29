@@ -1,0 +1,50 @@
+/** @Log.Event.Access — building, reading, and changing events */
+module PuduLangLog.Event
+
+import PuduLangLog.Constants.Names as Names
+import PuduLangLog.Domain.Display as Display
+import PuduLangLog.Domain.Parser as Parser
+import PuduLangLog.Domain.Properties as Properties
+import PuduLangLog as Log
+
+/// An event from its parts, with no failure, trace, or span.
+export fn create(timestamp: Log.Timestamp, level: Log.Level, template: Str, properties: Array[Log.Property]) -> Log.Event {
+  Log.Event{timestamp: timestamp, level: level, template: Parser.parse(template), properties: properties, failure: None, traceId: None, spanId: None}
+}
+
+/// The message: the template rendered with the event's properties.
+export fn message(event: &Log.Event) -> Str { Display.plain(&Display.message(&event.template, &event.properties, &None)) }
+
+/// The value of a property.
+export fn property(event: &Log.Event, name: Str) -> Option[Log.Value] { Properties.find(&event.properties, name) }
+
+/// The source context, when the event carries one as text.
+export fn sourceContext(event: &Log.Event) -> Option[Str] {
+  match property(event, Names.SOURCE_CONTEXT) {
+    case Some(Log.Scalar(Log.Text(source))) => Some(source)
+    case _ => None
+  }
+}
+
+/// The event with a property set, replacing any value it had.
+export fn withProperty(event: &Log.Event, name: Str, held: Log.Value) -> Log.Event {
+  Log.Event{..*event, properties: Properties.put(&event.properties, name, held)}
+}
+
+/// The event with a property set unless it already has one of that name.
+export fn withPropertyIfAbsent(event: &Log.Event, name: Str, held: Log.Value) -> Log.Event {
+  Log.Event{..*event, properties: Properties.putIfAbsent(&event.properties, name, held)}
+}
+
+/// The event without a property.
+export fn withoutProperty(event: &Log.Event, name: Str) -> Log.Event {
+  Log.Event{..*event, properties: Properties.remove(&event.properties, name)}
+}
+
+/// The event with a failure attached.
+export fn withFailure(event: &Log.Event, problem: Log.Failure) -> Log.Event { Log.Event{..*event, failure: Some(problem)} }
+
+/// The event with a trace and span identifier.
+export fn withTrace(event: &Log.Event, traceId: Str, spanId: Str) -> Log.Event {
+  Log.Event{..*event, traceId: Some(traceId), spanId: Some(spanId)}
+}

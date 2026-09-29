@@ -1,0 +1,45 @@
+/** @Example.Filtering.Program — expression filters, computed properties, and templates */
+module Filtering
+
+import Std.Io as Io
+import PuduLangLog.Configuration as Configuration
+import PuduLangLog.Expressions as Expressions
+import PuduLangLog as Log
+import PuduLangLog.Logger as Logger
+import PuduLangLog.Sinks.Console as Console
+import PuduLangLog.Value as Value
+
+/// Writes orders through an expression filter and an expression template, and answers 0.
+fn main() -> Int {
+  let expensive = match Expressions.predicate("Total > 100 or @l = 'Error'") {
+    case Ok(test) => test
+    case Err(problem) => {
+      let _said = Io.writeErrorLine(problem)
+      return 1
+    }
+  }
+  let area = match Expressions.computed("Area", "Substring(SourceContext, LastIndexOf(SourceContext, '.') + 1)") {
+    case Ok(enricher) => enricher
+    case Err(problem) => {
+      let _said = Io.writeErrorLine(problem)
+      return 1
+    }
+  }
+  let layout = match Expressions.template("[\{@l:u3\}] \{#if Area is not null\}\{Area\}: \{#end\}\{@m\}\{#each name, held in Rest(true)\} \{name\}=\{held\}\{#end\}\n") {
+    case Ok(formatter) => formatter
+    case Err(problem) => {
+      let _said = Io.writeErrorLine(problem)
+      return 1
+    }
+  }
+  let console = Console.sink(Console.Options{..Console.defaults(), formatter: Some(layout)})
+  let logger = Configuration.create().filterIncludingOnly(expensive).enrichWith(area).writeTo(console).createLogger()
+  let orders = logger.forSource("Shop.Orders")
+  for total in [40, 250, 90] {
+    orders.information("Order placed for \{Total\}", [Value.int(total)])
+  }
+  orders.forContext("Customer", Value.text("ada")).information("Order placed for \{Total\} with \{Items\} items", [Value.int(120), Value.int(3)])
+  orders.error("Payment declined", [])
+  Logger.close(&logger)
+  0
+}

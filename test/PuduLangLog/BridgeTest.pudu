@@ -1,0 +1,43 @@
+/** @Test.Bridge.Suite — standard library log lines written as events */
+module PuduLangLog.BridgeTest
+
+import Std.Io as Io
+import Std.List as List
+import Std.Log as Standard
+import Std.Option as Option
+import Std.Test as Test
+import PuduLangLog.Bridge as Bridge
+import PuduLangLog.Configuration as Configuration
+import PuduLangLog.Event as Event
+import PuduLangLog as Log
+import PuduLangLog.Logger as Logger
+import PuduLangLog.Sinks.Memory as Memory
+import PuduLangLog.Value as Value
+
+/// Runs the suite.
+fn main() -> Int {
+  let memory = Memory.create()
+  let logger = Configuration.create().minimumLevel(Log.Debug).overrideLevel("quiet", Log.Error).writeTo(Memory.sink(&memory)).createLogger()
+  let standard = Bridge.standard(&logger.withTrace("t1", "s1"))
+  let _debug = Standard.debug(&standard, "starting \{up\}")
+  let _info = Standard.info(&standard.named("shop.cart").carrying("user", "ada").carrying("SourceContext", "spoofed").carrying(" ", "blank"), "added")
+  let _warn = Standard.warn(&standard.named("quiet"), "dropped by the override")
+  let _error = Standard.error(&standard.named("quiet"), "kept")
+  let _fatal = Standard.fatal(&standard, "down")
+  let events = Memory.events(&memory)
+  let carted = List.get(&events, 1)
+  let checks = Test.suite("Bridge", &[
+      Test.equals("messages keep their text, braces included", &Memory.messages(&memory), &["starting \{up\}", "added", "kept", "down"]),
+      Test.equals("levels map across", &events.map(|event: Log.Event| event.level), &[Log.Debug, Log.Information, Log.Error, Log.Fatal]),
+      Test.equals("the name is the source and fields are properties", &Option.map(carted, |event: Log.Event| event.properties), &Some([Value.property("user", Value.text("ada")), Value.property("SourceContext", Value.text("shop.cart"))])),
+      Test.equals("the trace of the logger is kept", &Option.map(carted, |event: Log.Event| (event.traceId, event.spanId)), &Some((Some("t1"), Some("s1")))),
+      Test.equals("an unnamed line has no source", &Option.andThen(List.first(&events), |event: Log.Event| Event.sourceContext(&event)), &None),
+      Test.equals("level mapping", &[Bridge.levelOf(Standard.Debug), Bridge.levelOf(Standard.Info), Bridge.levelOf(Standard.Warn), Bridge.levelOf(Standard.Error), Bridge.levelOf(Standard.Fatal), Bridge.levelOf(Standard.Silent)], &[Log.Debug, Log.Information, Log.Warning, Log.Error, Log.Fatal, Log.Fatal]),
+      Test.that("the standard logger prints nothing itself", Standard.rendered(&standard, Standard.Info, "x").isEmpty())
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

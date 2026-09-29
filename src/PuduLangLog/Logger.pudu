@@ -1,0 +1,223 @@
+/** @Log.Logger.Facade — writes events and derives contextual loggers */
+module PuduLangLog.Logger
+
+import Std.Sync as Sync
+import PuduLangLog.Constants.Names as Names
+import PuduLangLog.Domain.Capture as Capture
+import PuduLangLog.Domain.Parser as Parser
+import PuduLangLog.Enricher as Enricher
+import PuduLangLog as Log
+import PuduLangLog.Pipeline as Pipeline
+import PuduLangLog.SelfLog as SelfLog
+import PuduLangLog.Sink as Sink
+
+/** @Log.Logger.Handle — a pipeline seen through one context */
+export type Logger = { root: Root, context: Array[Enricher.Enricher], source: Option[Str], trace: Option[(Str, Str)] }
+
+/** @Log.Logger.Root — a pipeline fixed at creation or replaceable later */
+export type Root = Fixed(Pipeline.Pipeline) | Reloadable(Sync.Cell[Pipeline.Pipeline])
+
+/// A logger over a pipeline.
+export fn fromPipeline(pipeline: Pipeline.Pipeline) -> Logger { Logger{root: Fixed(pipeline), context: [], source: None, trace: None} }
+
+/// A logger whose pipeline can be replaced with `reload`; every logger derived from it follows.
+export fn reloadable(pipeline: Pipeline.Pipeline) -> Logger { Logger{root: Reloadable(Sync.cell(pipeline)), context: [], source: None, trace: None} }
+
+/// Replaces the pipeline of a reloadable logger, flushing and closing the previous one. Answers
+/// whether the logger was reloadable.
+export fn reload(logger: &Logger, pipeline: Pipeline.Pipeline) -> Bool {
+  match &logger.root {
+    case Reloadable(cell) => {
+      if let Ok(previous) = Sync.swap(&cell, pipeline) {
+        (previous.sink.flush)()
+        (previous.sink.close)()
+      }
+      true
+    }
+    case Fixed(_) => false
+  }
+}
+
+/// A logger that writes nothing.
+export fn none() -> Logger { fromPipeline(Pipeline.silent()) }
+
+/// The pipeline the logger currently writes through.
+export fn pipelineOf(logger: &Logger) -> Pipeline.Pipeline {
+  match &logger.root {
+    case Fixed(pipeline) => pipeline
+    case Reloadable(cell) => {
+      match Sync.get(&cell) {
+        case Ok(pipeline) => pipeline
+        case Err(_) => Pipeline.silent()
+      }
+    }
+  }
+}
+
+/// Flushes every sink.
+export fn flush(logger: &Logger) -> () {
+  let pipeline = pipelineOf(logger)
+  (pipeline.sink.flush)()
+  if let Some(audit) = pipeline.audit { (audit.flush)() }
+}
+
+/// Flushes and closes every sink; call it once before the program ends.
+export fn close(logger: &Logger) -> () {
+  flush(logger)
+  let pipeline = pipelineOf(logger)
+  (pipeline.sink.close)()
+  if let Some(audit) = pipeline.audit { (audit.close)() }
+}
+
+/// The logger as a sink, so one pipeline can feed another. Events pass the logger's level check,
+/// enrichers, and filters.
+export fn asSink(logger: &Logger) -> Sink.Sink {
+  let shared = *logger
+  Sink.Sink {
+    emit: fn(event: &Log.Event) -> Result[(), Str] {
+      let pipeline = pipelineOf(&shared)
+      if !Pipeline.enabled(&pipeline, &shared.source, event.level) { return Ok(()) }
+      Pipeline.process(&pipeline, *event, &shared.context)
+    },
+    flush: fn() -> () { flush(&shared) },
+    close: fn() -> () { close(&shared) },
+    attach: fn(listener: Sink.Listener) -> () { (pipelineOf(&shared).sink.attach)(listener) }
+  }
+}
+
+/** @Log.Logger.Logging — the operations of a logger */
+export trait Logging {
+  fn isEnabled(self: &Self, level: Log.Level) -> Bool
+  fn write(self: &Self, level: Log.Level, template: Str, arguments: Array[Log.Value]) -> ()
+  fn writeFailure(self: &Self, level: Log.Level, failure: Log.Failure, template: Str, arguments: Array[Log.Value]) -> ()
+  fn tryWrite(self: &Self, level: Log.Level, failure: Option[Log.Failure], template: Str, arguments: Array[Log.Value]) -> Result[(), Str]
+  fn emit(self: &Self, event: Log.Event) -> Result[(), Str]
+  fn verbose(self: &Self, template: Str, arguments: Array[Log.Value]) -> ()
+  fn debug(self: &Self, template: Str, arguments: Array[Log.Value]) -> ()
+  fn information(self: &Self, template: Str, arguments: Array[Log.Value]) -> ()
+  fn warning(self: &Self, template: Str, arguments: Array[Log.Value]) -> ()
+  fn error(self: &Self, template: Str, arguments: Array[Log.Value]) -> ()
+  fn fatal(self: &Self, template: Str, arguments: Array[Log.Value]) -> ()
+  fn forContext(self: &Self, name: Str, held: Log.Value) -> Self
+  fn forContextDestructured(self: &Self, name: Str, held: Log.Value) -> Self
+  fn forSource(self: &Self, source: Str) -> Self
+  fn forEnricher(self: &Self, enricher: Enricher.Enricher) -> Self
+  fn withTrace(self: &Self, traceId: Str, spanId: Str) -> Self
+  fn bindTemplate(self: &Self, template: Str, arguments: Array[Log.Value]) -> (Log.Template, Array[Log.Property])
+  fn bindProperty(self: &Self, name: Str, held: Log.Value, destructure: Bool) -> Option[Log.Property]
+}
+
+impl Logging for Logger {
+  /// Whether an event at the level would be written.
+  fn isEnabled(self: &Self, level: Log.Level) -> Bool { Pipeline.enabled(&pipelineOf(self), &self.source, level) }
+
+  /// Writes an event from a template and its arguments.
+  fn write(self: &Self, level: Log.Level, template: Str, arguments: Array[Log.Value]) -> () {
+    let _written = self.tryWrite(level, None, template, arguments)
+  }
+
+  /// Writes an event carrying a failure.
+  fn writeFailure(self: &Self, level: Log.Level, failure: Log.Failure, template: Str, arguments: Array[Log.Value]) -> () {
+    let _written = self.tryWrite(level, Some(failure), template, arguments)
+  }
+
+  /// Writes an event and answers the failure of an audit sink, if any; other sinks never fail a
+  /// write.
+  fn tryWrite(self: &Self, level: Log.Level, failure: Option[Log.Failure], template: Str, arguments: Array[Log.Value]) -> Result[(), Str] {
+    let pipeline = pipelineOf(self)
+    if !Pipeline.enabled(&pipeline, &self.source, level) { return Ok(()) }
+    let parsed = Pipeline.templateOf(&pipeline, template)
+    let bound = Capture.bind(&pipeline.policy, &parsed, &arguments)
+    Pipeline.report(&pipeline, &bound.problems)
+    let event = Log.Event {
+      timestamp: (pipeline.clock)(),
+      level: level,
+      template: parsed,
+      properties: bound.properties,
+      failure: failure,
+      traceId: traceOf(&self.trace, true),
+      spanId: traceOf(&self.trace, false)
+    }
+    Pipeline.process(&pipeline, event, &self.context)
+  }
+
+  /// Writes a complete event when its level is enabled.
+  fn emit(self: &Self, event: Log.Event) -> Result[(), Str] {
+    let pipeline = pipelineOf(self)
+    if !Pipeline.enabled(&pipeline, &self.source, event.level) { return Ok(()) }
+    Pipeline.process(&pipeline, event, &self.context)
+  }
+
+  /// Writes a `Verbose` event.
+  fn verbose(self: &Self, template: Str, arguments: Array[Log.Value]) -> () { self.write(Log.Verbose, template, arguments) }
+
+  /// Writes a `Debug` event.
+  fn debug(self: &Self, template: Str, arguments: Array[Log.Value]) -> () { self.write(Log.Debug, template, arguments) }
+
+  /// Writes an `Information` event.
+  fn information(self: &Self, template: Str, arguments: Array[Log.Value]) -> () { self.write(Log.Information, template, arguments) }
+
+  /// Writes a `Warning` event.
+  fn warning(self: &Self, template: Str, arguments: Array[Log.Value]) -> () { self.write(Log.Warning, template, arguments) }
+
+  /// Writes an `Error` event.
+  fn error(self: &Self, template: Str, arguments: Array[Log.Value]) -> () { self.write(Log.Error, template, arguments) }
+
+  /// Writes a `Fatal` event.
+  fn fatal(self: &Self, template: Str, arguments: Array[Log.Value]) -> () { self.write(Log.Fatal, template, arguments) }
+
+  /// A logger adding a property to every event unless the event names it itself; structures
+  /// render to text. A blank name is reported to the self-log and ignored.
+  fn forContext(self: &Self, name: Str, held: Log.Value) -> Self { contextual(self, name, held, Log.Default) }
+
+  /// A logger adding a property to every event, keeping structures.
+  fn forContextDestructured(self: &Self, name: Str, held: Log.Value) -> Self { contextual(self, name, held, Log.Destructure) }
+
+  /// A logger whose events carry the source context, which also selects level overrides.
+  fn forSource(self: &Self, source: Str) -> Self { contextual(self, Names.SOURCE_CONTEXT, Log.Scalar(Log.Text(source)), Log.Default) }
+
+  /// A logger applying an enricher to every event before the pipeline's own.
+  fn forEnricher(self: &Self, enricher: Enricher.Enricher) -> Self { Logger{..*self, context: self.context.push(enricher)} }
+
+  /// A logger whose events carry a trace and span identifier.
+  fn withTrace(self: &Self, traceId: Str, spanId: Str) -> Self { Logger{..*self, trace: Some((traceId, spanId))} }
+
+  /// The parsed template and the properties the arguments bind to, as a write would produce.
+  fn bindTemplate(self: &Self, template: Str, arguments: Array[Log.Value]) -> (Log.Template, Array[Log.Property]) {
+    let pipeline = pipelineOf(self)
+    let parsed = Pipeline.templateOf(&pipeline, template)
+    let bound = Capture.bind(&pipeline.policy, &parsed, &arguments)
+    Pipeline.report(&pipeline, &bound.problems)
+    (parsed, bound.properties)
+  }
+
+  /// A property captured as a write would capture it, or none for a blank name.
+  fn bindProperty(self: &Self, name: Str, held: Log.Value, destructure: Bool) -> Option[Log.Property] {
+    if !Parser.isValidName(name) { return None }
+    let hint = if destructure { Log.Destructure } else { Log.Default }
+    Some(Log.Property{name: name, value: Capture.capture(&pipelineOf(self).policy, &held, hint)})
+  }
+}
+
+/// A logger with a captured property added; the source context, as given and before any
+/// truncation, also selects overrides.
+fn contextual(logger: &Logger, name: Str, held: Log.Value, hint: Log.Hint) -> Logger {
+  let pipeline = pipelineOf(logger)
+  if !Parser.isValidName(name) {
+    SelfLog.write(&pipeline.selfLog, "Attempt to add a context property with an invalid name `" + name + "`")
+    return *logger
+  }
+  let captured = Capture.capture(&pipeline.policy, &held, hint)
+  let enricher = Enricher.property(name, captured)
+  let source = match (name == Names.SOURCE_CONTEXT, held) {
+    case (true, Log.Scalar(Log.Text(text))) => Some(text)
+    case _ => logger.source
+  }
+  Logger{..*logger, context: logger.context.push(enricher), source: source}
+}
+
+/// The trace identifier, or the span identifier when `trace` is false.
+fn traceOf(trace: &Option[(Str, Str)], wantTrace: Bool) -> Option[Str] {
+  let pair = (*trace) ?
+  Some(if wantTrace { pair[0] } else { pair[1] })
+}

@@ -1,0 +1,68 @@
+/** @Log.Filter.Stage — decides which events continue to sinks */
+module PuduLangLog.Filter
+
+import Std.List as List
+import PuduLangLog.Constants.Names as Names
+import PuduLangLog.Domain.Levels as Levels
+import PuduLangLog.Domain.Properties as Properties
+import PuduLangLog.Domain.Sources as Sources
+import PuduLangLog as Log
+
+/** @Log.Filter.Predicate — a yes or no about one event */
+export type Predicate = fn(&Log.Event) -> Bool
+
+/** @Log.Filter.Keep — whether an event continues */
+export type Filter = fn(&Log.Event) -> Bool
+
+/// Keeps every event the predicate rejects.
+export fn byExcluding(predicate: Predicate) -> Filter { fn(event: &Log.Event) -> Bool { !predicate(event) } }
+
+/// Keeps only events the predicate accepts.
+export fn byIncludingOnly(predicate: Predicate) -> Filter { predicate }
+
+/// Events whose source context is the source or lies beneath it.
+export fn fromSource(source: Str) -> Predicate {
+  fn(event: &Log.Event) -> Bool {
+    match Properties.find(&event.properties, Names.SOURCE_CONTEXT) {
+      case Some(Log.Scalar(Log.Text(context))) => Sources.beneath(source, context)
+      case _ => false
+    }
+  }
+}
+
+/// Events that carry a property.
+export fn withProperty(name: Str) -> Predicate { fn(event: &Log.Event) -> Bool { Properties.has(&event.properties, name) } }
+
+/// Events whose property equals a value.
+export fn withPropertyValue(name: Str, expected: Log.Value) -> Predicate {
+  fn(event: &Log.Event) -> Bool { Properties.find(&event.properties, name) == Some(expected) }
+}
+
+/// Events whose property satisfies a test.
+export fn withPropertyWhere(name: Str, test: fn(&Log.Value) -> Bool) -> Predicate {
+  fn(event: &Log.Event) -> Bool {
+    match Properties.find(&event.properties, name) {
+      case Some(found) => test(&found)
+      case None => false
+    }
+  }
+}
+
+/// Events at or above a level.
+export fn atLeast(minimum: Log.Level) -> Predicate { fn(event: &Log.Event) -> Bool { Levels.passes(event.level, minimum) } }
+
+/// Events that carry a failure.
+export fn withFailure() -> Predicate { fn(event: &Log.Event) -> Bool { event.failure != None } }
+
+/// Events every predicate accepts.
+export fn allOf(predicates: Array[Predicate]) -> Predicate {
+  fn(event: &Log.Event) -> Bool { List.all(&predicates, |predicate: Predicate| predicate(event)) }
+}
+
+/// Events some predicate accepts.
+export fn anyOf(predicates: Array[Predicate]) -> Predicate {
+  fn(event: &Log.Event) -> Bool { List.any(&predicates, |predicate: Predicate| predicate(event)) }
+}
+
+/// Events the predicate rejects.
+export fn not(predicate: Predicate) -> Predicate { fn(event: &Log.Event) -> Bool { !predicate(event) } }

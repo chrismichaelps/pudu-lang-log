@@ -1,0 +1,59 @@
+/** @Test.Domain.Output.Suite — output templates and event identifiers */
+module PuduLangLog.Domain.OutputTest
+
+import Std.Io as Io
+import Std.Test as Test
+import PuduLangLog.Domain.Display as Display
+import PuduLangLog.Domain.EventId as EventId
+import PuduLangLog.Domain.Output as Output
+import PuduLangLog.Domain.Parser as Parser
+import PuduLangLog as Log
+
+/// A text scalar value.
+fn text(held: Str) -> Log.Value { Log.Scalar(Log.Text(held)) }
+
+/// A property.
+fn property(name: Str, held: Log.Value) -> Log.Property { Log.Property{name: name, value: held} }
+
+/// The event rendered through an output template, as plain text.
+fn rendered(output: Str, event: &Log.Event) -> Str { Display.plain(&Output.render(&Parser.parse(output), event)) }
+
+/// Runs the suite.
+fn main() -> Int {
+  let event = Log.Event {
+    timestamp: Log.Timestamp{millis: 1790604309123, offset: 120},
+    level: Log.Warning,
+    template: Parser.parse("Disk \{Disk\} is \{Percent\}% full"),
+    properties: [property("Disk", text("C")), property("Percent", Log.Scalar(Log.Integer(93))), property("SourceContext", text("App.Disk")), property("Host", text("web-1"))],
+    failure: None,
+    traceId: Some("4bf92f3577b34da6a3ce929d0e0e4736"),
+    spanId: Some("00f067aa0ba902b7")
+  }
+  let failed = Log.Event{..event, failure: Some(Log.Failure{kind: "IoError", message: "full", trace: ["Disk.write"], causes: []})}
+  let checks = Test.suite("Domain.Output", &[
+      Test.equals("the console layout", &rendered("[\{Timestamp:HH:mm:ss\} \{Level:u3\}] \{Message:lj\}\{NewLine\}\{Exception\}", &event), &"[16:05:09 WRN] Disk C is 93% full\n"),
+      Test.equals("the file layout", &rendered("\{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz\} [\{Level:u3\}] \{Message:lj\}\{NewLine\}\{Exception\}", &event), &"2026-09-28 16:05:09.123 +02:00 [WRN] Disk C is 93% full\n"),
+      Test.equals("a message without format quotes text", &rendered("\{Message\}", &event), &"Disk \"C\" is 93% full"),
+      Test.equals("timestamps without a format", &(rendered("\{Timestamp\}", &event), rendered("\{UtcTimestamp:HH:mm\}", &event)), &("09/28/2026 16:05:09 +02:00", "14:05")),
+      Test.equals("levels", &(rendered("\{Level\}", &event), rendered("\{Level:w3\}", &event), rendered("[\{Level,-9\}]", &event)), &("Warning", "wrn", "[Warning  ]")),
+      Test.equals("text properties render bare and cased", &(rendered("\{SourceContext\}", &event), rendered("\{Host:u\}", &event)), &("App.Disk", "WEB-1")),
+      Test.equals("other properties render as values", &rendered("\{Percent:000\}", &event), &"093"),
+      Test.equals("a missing property writes nothing", &rendered("[\{Missing,5\}]", &event), &"[     ]"),
+      Test.equals("trace and span", &rendered("\{TraceId\}/\{SpanId\}", &event), &"4bf92f3577b34da6a3ce929d0e0e4736/00f067aa0ba902b7"),
+      Test.equals("absent trace and span are empty", &rendered("[\{TraceId\}]", &Log.Event{..event, traceId: None}), &"[]"),
+      Test.equals("the remaining properties", &rendered("\{Properties\}", &event), &"\{ SourceContext: \"App.Disk\", Host: \"web-1\" \}"),
+      Test.equals("properties named by the output template are left out", &rendered("\{SourceContext\} \{Properties\}", &event), &"App.Disk \{ Host: \"web-1\" \}"),
+      Test.equals("the remaining properties as JSON", &rendered("\{Properties:j\}", &event), &"\{\"SourceContext\":\"App.Disk\",\"Host\":\"web-1\"\}"),
+      Test.equals("no remaining properties", &rendered("\{Properties\}", &Log.Event{..event, properties: []}), &"\{ \}"),
+      Test.equals("a failure ends with a line break", &rendered("\{Message:l\}\{NewLine\}\{Exception\}", &failed), &"Disk C is 93% full\nIoError: full\n   at Disk.write\n"),
+      Test.equals("trace lines are secondary", &Output.render(&Parser.parse("\{Exception\}"), &failed).map(|piece: Display.Piece| piece.style), &[Display.Plain, Display.Secondary]),
+      Test.equals("output styles", &Output.render(&Parser.parse("[\{Timestamp:HH\} \{Level:u3\}]"), &event).map(|piece: Display.Piece| piece.style), &[Display.Tertiary, Display.Secondary, Display.Tertiary, Display.LevelStyle(Log.Warning), Display.Tertiary]),
+      Test.equals("event identifiers", &[EventId.hex(EventId.compute("Hello, \{Name\}!")), EventId.hex(EventId.compute("")), EventId.hex(EventId.compute("a"))], &["3872171f", "00000000", "ca2e9442"]),
+      Test.equals("a long template's identifier", &EventId.hex(EventId.compute("HTTP \{RequestMethod\} \{RequestPath\} responded \{StatusCode\} in \{Elapsed:0.0000\} ms")), &"62d0885c")
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

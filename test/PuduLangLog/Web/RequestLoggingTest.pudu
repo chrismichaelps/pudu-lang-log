@@ -1,0 +1,75 @@
+/** @Test.Web.RequestLogging.Suite — completion events for HTTP requests */
+module PuduLangLog.Web.RequestLoggingTest
+
+import Std.Http.Server.Route as Route
+import Std.Http as Web
+import Std.Io as Io
+import Std.Map as Map
+import Std.Test as Test
+import PuduLangLog.Configuration as Configuration
+import PuduLangLog.Event as Event
+import PuduLangLog.Failure as Failure
+import PuduLangLog as Log
+import PuduLangLog.Sinks.Memory as Memory
+import PuduLangLog.Value as Value
+import PuduLangLog.Web.Diagnostic as Diagnostic
+import PuduLangLog.Web.RequestLogging as RequestLogging
+
+/// A routed request for a target, with headers.
+fn request(method: Web.Method, target: Str, headers: Array[(Str, Str)]) -> Route.Request {
+  Route.Request{message: Web.Request{..Web.request(method, target), headers: headers}, path: Route.pathOf(target), params: Map.empty(), query: Route.queryOf(target), peer: "127.0.0.1"}
+}
+
+/// A response with a status and no body.
+fn answer(status: Int) -> Web.Response { Web.Response{status: Web.status(status), headers: [], body: "", binaryBody: None} }
+
+/// Runs the suite.
+fn main() -> Int {
+  let memory = Memory.create()
+  let logger = Configuration.create().writeTo(Memory.sink(&memory)).createLogger()
+  let logging = RequestLogging.middleware(&logger, RequestLogging.defaults())
+  let ok = logging(request(Web.Get, "/orders/7?page=2", [("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")]), fn(_request: Route.Request) -> Web.Response { answer(200) })
+  let _broken = logging(request(Web.Post, "/orders", [("traceparent", "garbage")]), fn(_request: Route.Request) -> Web.Response { answer(503) })
+  let withQuery = RequestLogging.middleware(&logger, RequestLogging.Options{..RequestLogging.defaults(), includeQueryInRequestPath: true, enrich: fn(collector: &Diagnostic.Collector, incoming: &Route.Request, response: &Web.Response) -> () {
+        Diagnostic.set(collector, "Peer", Value.text(incoming.peer))
+        Diagnostic.set(collector, "Length", Value.int(response.body.length()))
+      } })
+  let _queried = withQuery(request(Web.Get, "/search?q=tea", []), fn(_request: Route.Request) -> Web.Response { answer(200) })
+  let handled = RequestLogging.handler(&logger, RequestLogging.defaults(), fn(_request: Route.Request, collector: &Diagnostic.Collector) -> Web.Response {
+      Diagnostic.set(collector, "UserId", Value.int(9))
+      Diagnostic.set(collector, "UserId", Value.int(10))
+      Diagnostic.setDestructured(collector, "Cart", Value.structure("Cart", [("Items", Value.int(2))]))
+      Diagnostic.setFailure(collector, Failure.of("PaymentError", "declined"))
+      answer(402)
+    })
+  let _handled = handled(request(Web.Post, "/checkout", []))
+  let quiet = Configuration.create().minimumLevel(Log.Warning).writeTo(Memory.sink(&memory)).createLogger()
+  let _quiet = RequestLogging.middleware(&quiet, RequestLogging.defaults())(request(Web.Get, "/health", []), fn(_request: Route.Request) -> Web.Response { answer(200) })
+  let events = Memory.events(&memory)
+  let first = events[0]
+  let checks = Test.suite("Web.RequestLogging", &[
+      Test.equals("the handler's response passes through", &ok.status.code, &200),
+      Test.equals("one event per request, none below the minimum", &events.length(), &4),
+      Test.equals("the default message", &first.template.text, &"HTTP \{RequestMethod\} \{RequestPath\} responded \{StatusCode\} in \{Elapsed:0.0000\} ms"),
+      Test.equals("method, path without query, and status", &(Event.property(&first, "RequestMethod"), Event.property(&first, "RequestPath"), Event.property(&first, "StatusCode")), &(Some(Value.text("GET")), Some(Value.text("/orders/7")), Some(Value.int(200)))),
+      Test.that("elapsed milliseconds are a non-negative float", match Event.property(&first, "Elapsed") {
+          case Some(Log.Scalar(Log.Real(millis))) => millis >= 0.0
+          case _ => false
+        }),
+      Test.equals("the source context", &Event.sourceContext(&first), &Some(RequestLogging.SOURCE)),
+      Test.equals("a trace parent sets trace and span", &(first.traceId, first.spanId), &(Some("4bf92f3577b34da6a3ce929d0e0e4736"), Some("00f067aa0ba902b7"))),
+      Test.equals("a malformed trace parent is ignored", &events[1].traceId, &None),
+      Test.equals("server errors are errors", &(first.level, events[1].level), &(Log.Information, Log.Error)),
+      Test.equals("the query can be kept in the path", &Event.property(&events[2], "RequestPath"), &Some(Value.text("/search?q=tea"))),
+      Test.equals("enrichment sees the request and response", &(Event.property(&events[2], "Peer"), Event.property(&events[2], "Length")), &(Some(Value.text("127.0.0.1")), Some(Value.int(0)))),
+      Test.equals("handler properties replace earlier values", &Event.property(&events[3], "UserId"), &Some(Value.int(10))),
+      Test.equals("destructured handler properties keep structure", &Event.property(&events[3], "Cart"), &Some(Value.structure("Cart", [("Items", Value.int(2))]))),
+      Test.equals("a handler failure makes the event an error", &(events[3].level, events[3].failure), &(Log.Error, Some(Failure.of("PaymentError", "declined")))),
+      Test.equals("the level rule", &[RequestLogging.levelFor(200, false), RequestLogging.levelFor(499, false), RequestLogging.levelFor(500, false), RequestLogging.levelFor(200, true)], &[Log.Information, Log.Information, Log.Error, Log.Error])
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

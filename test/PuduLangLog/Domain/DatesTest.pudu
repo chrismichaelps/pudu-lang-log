@@ -1,0 +1,53 @@
+/** @Test.Domain.Dates.Suite — timestamp and duration formats */
+module PuduLangLog.Domain.DatesTest
+
+import Std.Io as Io
+import Std.Test as Test
+import PuduLangLog.Domain.Dates as Dates
+import PuduLangLog as Log
+
+/// 2026-09-28 14:05:09.123 UTC observed at two hours east.
+const EAST: Log.Timestamp = Log.Timestamp{millis: 1790604309123, offset: 120}
+
+/// 2026-01-04 23:00:00 UTC observed at five and a half hours west.
+const WEST: Log.Timestamp = Log.Timestamp{millis: 1767567600000, offset: -330}
+
+/// The east timestamp under a format.
+fn east(format: Str) -> Str { Dates.formatMoment(&EAST, &Some(format)) }
+
+/// A duration under a format.
+fn span(millis: Int, format: Str) -> Str { Dates.formatSpan(millis, &Some(format)) }
+
+/// Runs the suite.
+fn main() -> Int {
+  let checks = Test.suite("Domain.Dates", &[
+      Test.equals("no format", &Dates.formatMoment(&EAST, &None), &"09/28/2026 16:05:09 +02:00"),
+      Test.equals("round trip", &Dates.roundTrip(&EAST), &"2026-09-28T16:05:09.1230000+02:00"),
+      Test.equals("round trip west of UTC", &Dates.roundTrip(&WEST), &"2026-01-04T17:30:00.0000000-05:30"),
+      Test.equals("time of day", &(east("HH:mm:ss"), east("HH:mm:ss.fff"), east("h:mm tt"), east("hh t")), &("16:05:09", "16:05:09.123", "4:05 PM", "04 P")),
+      Test.equals("date parts", &(east("yyyy-MM-dd"), east("yy/M/d"), east("yyyyy"), east("%y")), &("2026-09-28", "26/9/28", "02026", "26")),
+      Test.equals("names", &(east("ddd, dd MMM"), east("dddd MMMM")), &("Mon, 28 Sep", "Monday September")),
+      Test.equals("fractions", &(east("fffffff"), east("ff"), east("FFFFFFF"), east("%f")), &("1230000", "12", "123", "1")),
+      Test.equals("zero fractions trim to nothing", &Dates.formatMoment(&WEST, &Some("ss.FFF")), &"00."),
+      Test.equals("offsets", &(east("z"), east("zz"), east("zzz"), east("K")), &("+2", "+02", "+02:00", "+02:00")),
+      Test.equals("negative offsets", &Dates.formatMoment(&WEST, &Some("z zz zzz")), &"-5 -05 -05:30"),
+      Test.equals("quoted and escaped literals", &(east("'T'HH"), east("\"at\" HH"), east("\\h HH"), east("%d")), &("T16", "at 16", "h 16", "28")),
+      Test.equals("an unclosed quote runs to the end", &east("HH 'rest"), &"16 rest"),
+      Test.equals("other characters are literal", &east("HH:mm - era g"), &"16:05 - era A.D."),
+      Test.equals("sortable and short standard formats", &(east("s"), east("t"), east("T"), east("d")), &("2026-09-28T16:05:09", "16:05", "16:05:09", "09/28/2026")),
+      Test.equals("long standard formats", &(east("D"), east("f"), east("G"), east("M"), east("Y")), &("Monday, 28 September 2026", "Monday, 28 September 2026 16:05", "09/28/2026 16:05:09", "September 28", "2026 September")),
+      Test.equals("universal standard formats render UTC", &(east("u"), east("R"), east("U")), &("2026-09-28 14:05:09Z", "Mon, 28 Sep 2026 14:05:09 GMT", "Monday, 28 September 2026 14:05:09")),
+      Test.equals("noon is after midday", &Dates.formatMoment(&Log.Timestamp{millis: 43200000, offset: 0}, &Some("h tt")), &"12 PM"),
+      Test.equals("midnight on a twelve-hour clock", &Dates.formatMoment(&Log.Timestamp{millis: 0, offset: 0}, &Some("h tt")), &"12 AM"),
+      Test.equals("a local date can be the day before UTC", &Dates.formatMoment(&Log.Timestamp{millis: 0, offset: -60}, &Some("yyyy-MM-dd HH")), &"1969-12-31 23"),
+      Test.equals("constant duration format", &(span(0, "c"), span(1500, "c"), span(90061001, "c"), span(-3600000, "c")), &("00:00:00", "00:00:01.5000000", "1.01:01:01.0010000", "-01:00:00")),
+      Test.equals("no duration format is the constant format", &Dates.formatSpan(61000, &None), &"00:01:01"),
+      Test.equals("general duration formats", &(span(1500, "g"), span(90061000, "g"), span(1500, "G")), &("0:00:01.5", "1:1:01:01", "0:00:00:01.5000000")),
+      Test.equals("custom duration format", &(span(3723004, "hh\\:mm\\:ss"), span(3723004, "h'h 'm'm'"), span(3723004, "ss.fff"), span(3723000, "s.FFF"), span(90061000, "dd")), &("01:02:03", "1h 2m", "03.004", "3.", "01"))
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

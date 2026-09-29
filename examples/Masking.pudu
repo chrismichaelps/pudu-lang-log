@@ -1,0 +1,25 @@
+/** @Example.Masking.Program — sensitive values hidden before any sink sees them */
+module Masking
+
+import Std.Io as Io
+import PuduLangLog.Configuration as Configuration
+import PuduLangLog.Enrichers.Masking as Masking
+import PuduLangLog.Logger as Logger
+import PuduLangLog.Sinks.Console as Console
+import PuduLangLog.Value as Value
+
+/// Logs a sign-up with a password, an address, and a card number, all hidden, and answers 0.
+fn main() -> Int {
+  let patterns = match Masking.sensitive(Masking.MASK) {
+    case Ok(enricher) => enricher
+    case Err(problem) => {
+      let _said = Io.writeErrorLine(problem)
+      return 1
+    }
+  }
+  let logger = Configuration.create().enrichWith(Masking.properties(["Password", "Token"], Masking.MASK)).enrichWith(patterns).destructureByIgnoring("Account", ["Secret"]).writeTo(Console.sink(Console.Options{..Console.defaults(), colored: false})).createLogger()
+  logger.information("Signed up \{Email\} with \{Password\}", [Value.text("ada@example.org"), Value.text("hunter2")])
+  logger.information("Charged card \{Card\} for \{@Account\}", [Value.text("4111 1111 1111 1111"), Value.structure("Account", [("Name", Value.text("Ada")), ("Secret", Value.text("s3cret")), ("Token", Value.text("abc"))])])
+  Logger.close(&logger)
+  0
+}

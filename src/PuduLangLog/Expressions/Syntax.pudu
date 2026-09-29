@@ -1,0 +1,76 @@
+/** @Log.Expressions.Syntax.Tree — the parsed form of filter expressions */
+module PuduLangLog.Expressions.Syntax
+
+import PuduLangLog as Log
+
+/** @Log.Expressions.Syntax.Expression — one node of an expression */
+export type Expression = Constant(Log.Value)
+  | Name(Str)
+  | Member(Expression, Str)
+  | Index(Expression, Expression)
+  | Wildcard(Expression, Quantifier)
+  | Call(Str, Array[Expression], Bool)
+  | Unary(Str, Expression)
+  | Binary(Str, Expression, Expression, Bool)
+  | ArrayOf(Array[Element])
+  | ObjectOf(Array[Field])
+  | Conditional(Expression, Expression, Expression)
+
+/** @Log.Expressions.Syntax.Quantifier — whether any or every element must match */
+export type Quantifier = AnyOf | AllOf
+
+/** @Log.Expressions.Syntax.Element — an array item or a spread array */
+export type Element = Item(Expression) | SpreadItems(Expression)
+
+/** @Log.Expressions.Syntax.Field — an object member or a spread object */
+export type Field = Pair(Str, Expression) | SpreadMembers(Expression)
+
+/// Every name an expression reads, in order of first appearance, locals included.
+export fn namesIn(expression: &Expression) -> Array[Str] {
+  var found: Array[Str] = []
+  for part in partsOf(expression) {
+    if let Name(name) = part {
+      if !found.contains(name) { found = found.push(name) }
+    }
+  }
+  found
+}
+
+/// Every function an expression calls, by lower-case name.
+export fn callsIn(expression: &Expression) -> Array[Str] {
+  var found: Array[Str] = []
+  for part in partsOf(expression) {
+    if let Call(name, _, _) = part { found = found.push(name) }
+  }
+  found
+}
+
+/// The expression and every expression inside it, outermost first.
+fn partsOf(expression: &Expression) -> Array[Expression] {
+  var found = [*expression]
+  for child in children(expression) { found = found.concat(partsOf(&child)) }
+  found
+}
+
+/// The expressions directly inside an expression.
+fn children(expression: &Expression) -> Array[Expression] {
+  match expression {
+    case Constant(_) => []
+    case Name(_) => []
+    case Member(target, _) => [target]
+    case Index(target, key) => [target, key]
+    case Wildcard(target, _) => [target]
+    case Call(_, arguments, _) => arguments
+    case Unary(_, operand) => [operand]
+    case Binary(_, left, right, _) => [left, right]
+    case ArrayOf(elements) => elements.map(|element: Element| match element {
+        case Item(item) => item
+        case SpreadItems(items) => items
+      })
+    case ObjectOf(fields) => fields.map(|field: Field| match field {
+        case Pair(_, held) => held
+        case SpreadMembers(members) => members
+      })
+    case Conditional(condition, then, otherwise) => [condition, then, otherwise]
+  }
+}

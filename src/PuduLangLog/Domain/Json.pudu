@@ -1,0 +1,89 @@
+/** @Log.Domain.Json.Module — captured values written as JSON text */
+module PuduLangLog.Domain.Json
+
+import Std.Decimal as Decimal
+import Std.Option as Option
+import PuduLangLog.Domain.Dates as Dates
+import PuduLangLog.Domain.Numbers as Numbers
+import PuduLangLog as Log
+
+/// Hexadecimal digits by value, upper case.
+const HEX: Str = "0123456789ABCDEF"
+
+/// The text as a JSON string literal: quotes, backslashes, and control characters escaped.
+export fn quote(text: Str) -> Str {
+  var pieces: Array[Str] = ["\""]
+  for character in text.chars() {
+    let code = character.code()
+    if character == '"' {
+      pieces = pieces.push("\\\"")
+    } else if character == '\\' {
+      pieces = pieces.push("\\\\")
+    } else if character == '\n' {
+      pieces = pieces.push("\\n")
+    } else if character == '\r' {
+      pieces = pieces.push("\\r")
+    } else if character == '\t' {
+      pieces = pieces.push("\\t")
+    } else if code == 12 {
+      pieces = pieces.push("\\f")
+    } else if code < 32 {
+      pieces = pieces.push("\\u00" + HEX.slice(code / 16, code / 16 + 1) + HEX.slice(code % 16, code % 16 + 1))
+    } else {
+      pieces = pieces.push(character.toText())
+    }
+  }
+  pieces.push("\"").join("")
+}
+
+/// A scalar as JSON: numbers bare, text and times quoted, and non-finite floats as quoted names.
+export fn scalar(atom: &Log.Scalar) -> Str {
+  match atom {
+    case Log.Null => "null"
+    case Log.Boolean(flag) => if flag { "true" } else { "false" }
+    case Log.Integer(number) => show(number)
+    case Log.Real(number) => if Numbers.digitsOfReal(number) == None { quote(show(number)) } else { Numbers.realText(number) }
+    case Log.Exact(number) => Decimal.toText(number)
+    case Log.Text(text) => quote(text)
+    case Log.Moment(moment) => quote(Dates.roundTrip(&moment))
+    case Log.Span(millis) => quote(Dates.formatSpan(millis, &None))
+    case Log.Binary(bytes) => quote(hexOf(&bytes))
+  }
+}
+
+/// A value as JSON. Structures become objects that carry their tag under `typeTag` when one is
+/// named; dictionaries become objects keyed by their keys' text.
+export fn value(held: &Log.Value, typeTag: &Option[Str]) -> Str {
+  match held {
+    case Log.Scalar(atom) => scalar(&atom)
+    case Log.Sequence(items) => "[" + items.map(|item: Log.Value| value(&item, typeTag)).join(",") + "]"
+    case Log.Structure(shape) => {
+      var members = shape.properties.map(|property: Log.Property| quote(property.name) + ":" + value(&property.value, typeTag))
+      if let (Some(name), Some(tag)) = (*typeTag, shape.tag) { members = members.push(quote(name) + ":" + quote(tag)) }
+      "\{" + members.join(",") + "\}"
+    }
+    case Log.Dictionary(entries) => "\{" + entries.map(|entry: Log.Entry| keyOf(&entry.key) + ":" + value(&entry.value, typeTag)).join(",") + "\}"
+  }
+}
+
+/// A dictionary key as a JSON string.
+fn keyOf(key: &Log.Scalar) -> Str {
+  match key {
+    case Log.Text(text) => quote(text)
+    case Log.Null => "\"null\""
+    case _ => {
+      let text = scalar(key)
+      if text.startsWith("\"") { text } else { quote(text) }
+    }
+  }
+}
+
+/// Bytes as upper-case hexadecimal digits.
+export fn hexOf(bytes: &Bytes) -> Str {
+  var pieces: Array[Str] = []
+  for octet in bytes.toArray() {
+    let code = Option.unwrapOr(convertInteger[Int](octet), 0)
+    pieces = pieces.push(HEX.slice(code / 16, code / 16 + 1) + HEX.slice(code % 16, code % 16 + 1))
+  }
+  pieces.join("")
+}

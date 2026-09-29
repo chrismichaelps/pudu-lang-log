@@ -1,0 +1,42 @@
+/** @Example.Files.Program — compact JSON files written, rolled, and read back */
+module Files
+
+import Std.Env as Env
+import Std.Io as Io
+import Std.Result as Result
+import PuduLangLog.Configuration as Configuration
+import PuduLangLog.Event as Event
+import PuduLangLog.Formatting.Compact as Compact
+import PuduLangLog.Formatting.Reader as Reader
+import PuduLangLog as Log
+import PuduLangLog.Logger as Logger
+import PuduLangLog.Sinks.File as File
+import PuduLangLog.Value as Value
+
+/// Writes events to a daily file of compact JSON, reads them back, and answers 0.
+fn main() -> Int {
+  let directory = Env.temporaryDirectory() + "/pudu-lang-log-files-example"
+  let _made = Io.makeDirectory(directory)
+  let path = directory + "/app.clef"
+  let file = File.sink(File.Options{..File.defaults(path), formatter: Compact.compact(), rollingInterval: Log.Day, retainedFileCountLimit: Some(7)})
+  let logger = Configuration.create().writeTo(file).createLogger()
+  for number in [1, 2, 3] {
+    logger.information("Processed batch \{Batch\} of \{Size\} items", [Value.int(number), Value.int(number * 100)])
+  }
+  logger.warning("Batch \{Batch\} was slow", [Value.int(3)])
+  Logger.close(&logger)
+  var status = 0
+  for written in Result.unwrapOr(Io.listPaths(directory), []) {
+    match Reader.readFile(written) {
+      case Ok(events) => {
+        for event in events { let _shown = Io.writeLine(show(event.level) + ": " + Event.message(&event)) }
+      }
+      case Err(problem) => {
+        let _said = Io.writeErrorLine(problem)
+        status = 1
+      }
+    }
+    let _removed = Io.remove(written)
+  }
+  status
+}

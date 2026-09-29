@@ -1,0 +1,51 @@
+/** @Log.SelfLog.Diagnostics — reports problems inside the logging pipeline */
+module PuduLangLog.SelfLog
+
+import Std.Io as Io
+import Std.Sync as Sync
+import Std.Time as Time
+import PuduLangLog.Domain.Dates as Dates
+import PuduLangLog as Log
+
+/** @Log.SelfLog.Channel — an optional writer for pipeline problems */
+export type SelfLog = { writer: Sync.Cell[Option[fn(Str) -> ()]] }
+
+/// A self-log that writes nothing until enabled.
+export fn create() -> SelfLog {
+  let none: Option[fn(Str) -> ()] = None
+  SelfLog{writer: Sync.cell(none)}
+}
+
+/// A self-log writing to the error stream.
+export fn toErrorStream() -> SelfLog {
+  let log = create()
+  enable(&log, fn(line: Str) -> () { let _written = Io.writeErrorLine(line) })
+  log
+}
+
+/// Starts sending problems to a writer.
+export fn enable(log: &SelfLog, writer: fn(Str) -> ()) -> () {
+  let _stored = Sync.set(&log.writer, Some(writer))
+}
+
+/// Stops sending problems anywhere.
+export fn disable(log: &SelfLog) -> () {
+  let none: Option[fn(Str) -> ()] = None
+  let _stored = Sync.set(&log.writer, none)
+}
+
+/// Whether a writer is set.
+export fn isEnabled(log: &SelfLog) -> Bool {
+  match Sync.get(&log.writer) {
+    case Ok(Some(_)) => true
+    case _ => false
+  }
+}
+
+/// Writes a problem, prefixed with the UTC time, when a writer is set.
+export fn write(log: &SelfLog, message: Str) -> () {
+  if let Ok(Some(writer)) = Sync.get(&log.writer) {
+    let stamp = Dates.roundTrip(&Log.Timestamp{millis: Time.toMillis(&Time.currentInstant()), offset: 0})
+    writer(stamp + " " + message)
+  }
+}

@@ -1,0 +1,24 @@
+/** @Log.Failure.Builders — error values attached to events */
+module PuduLangLog.Failure
+
+import PuduLangLog.Domain.Display as Display
+import PuduLangLog as Log
+
+/// A failure of a kind with a message.
+export fn of(kind: Str, message: Str) -> Log.Failure { Log.Failure{kind: kind, message: message, trace: [], causes: []} }
+
+/// A failure from any error value: its kind is the given name and its message the value's text.
+export fn from[E](kind: Str, error: E) -> Log.Failure {
+  let text = show(error)
+  let unquoted = if text.length() >= 2 && text.startsWith("\"") && text.endsWith("\"") { text.slice(1, text.length() - 1) } else { text }
+  of(kind, unquoted)
+}
+
+/// The failure with trace lines added, innermost call first.
+export fn withTrace(problem: &Log.Failure, lines: Array[Str]) -> Log.Failure { Log.Failure{..*problem, trace: problem.trace.concat(lines)} }
+
+/// The failure with another failure recorded as its cause.
+export fn causedBy(problem: &Log.Failure, cause: Log.Failure) -> Log.Failure { Log.Failure{..*problem, causes: problem.causes.push(cause)} }
+
+/// The failure as text: `Kind: message`, its trace, and its causes.
+export fn describe(problem: &Log.Failure) -> Str { Display.failure(problem) }

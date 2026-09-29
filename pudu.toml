@@ -1,0 +1,11 @@
+[package]
+name = "@chrismichaelps/pudu-lang-log"
+version = "0.1.0"
+description = "Structured event logging for Pudu: message templates, enrichment, filtering, formatting, and sinks"
+license = "Apache-2.0"
+keywords = ["logging", "structured-logging", "log", "diagnostics", "json", "pudu"]
+language = ">=0.1.2 <0.2.0"
+source = "src"
+root = "PuduLangLog"
+
+[dependencies]

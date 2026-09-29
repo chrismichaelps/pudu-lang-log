@@ -1,0 +1,69 @@
+/** @Log.Expressions.Facade — filter expressions and expression templates */
+module PuduLangLog.Expressions
+
+import PuduLangLog.Clock as Clock
+import PuduLangLog.Domain.Capture as Capture
+import PuduLangLog.Domain.Properties as Properties
+import PuduLangLog.Enricher as Enricher
+import PuduLangLog.Expressions.Evaluator as Evaluator
+import PuduLangLog.Expressions.Functions as Functions
+import PuduLangLog.Expressions.Parser as Parser
+import PuduLangLog.Expressions.Syntax as Syntax
+import PuduLangLog.Expressions.Template as Template
+import PuduLangLog.Expressions.Values as Values
+import PuduLangLog as Log
+
+/** @Log.Expressions.Compiled — a parsed expression and its text */
+export type Compiled = { text: Str, expression: Syntax.Expression }
+
+/// The expression the text denotes, or why it could not be read, including a call to an unknown
+/// function.
+export fn compile(text: Str) -> Result[Compiled, Str] {
+  let expression = Parser.parse(text) ?
+  for name in Syntax.callsIn(&expression) {
+    if !Functions.isKnown(name) { return Err("unknown function `" + name + "`") }
+  }
+  Ok(Compiled{text: text, expression: expression})
+}
+
+/// The value of a compiled expression for an event, or none when it is undefined.
+export fn evaluate(compiled: &Compiled, event: &Log.Event) -> Option[Log.Value] {
+  Evaluator.evaluate(&compiled.expression, &Evaluator.scopeOf(event, Clock.system()()))
+}
+
+/// A predicate true for the events that make the expression the boolean `true`, for filters,
+/// conditional sinks, and conditional enrichers.
+export fn predicate(text: Str) -> Result[fn(&Log.Event) -> Bool, Str] {
+  let compiled = compile(text) ?
+  Ok(fn(event: &Log.Event) -> Bool { Values.isTrue(&evaluate(&compiled, event)) })
+}
+
+/// An enricher adding a property whose value is the expression evaluated for each event, unless
+/// the event already has the property or the expression is undefined for it.
+export fn computed(name: Str, text: Str) -> Result[Enricher.Enricher, Str] {
+  let compiled = compile(text) ?
+  Ok(fn(event: Log.Event, policy: &Capture.Policy) -> Log.Event {
+      if Properties.has(&event.properties, name) { return event }
+      match evaluate(&compiled, &event) {
+        case Some(held) => Log.Event{..event, properties: event.properties.push(Log.Property{name: name, value: Capture.capture(policy, &held, Log.Destructure)})}
+        case None => event
+      }
+    })
+}
+
+/// A formatter writing each event through an expression template of holes `{expression:format}`
+/// and the directives `#if`, `#else if`, `#else`, `#each … in …`, `#delimit`, and `#end`.
+export fn template(text: Str) -> Result[Log.Formatter, Str] {
+  let nodes = Template.parse(text) ?
+  var referenced: Array[Str] = []
+  for expression in Template.expressionsIn(&nodes) {
+    for name in Syntax.callsIn(&expression) {
+      if !Functions.isKnown(name) { return Err("unknown function `" + name + "`") }
+    }
+    referenced = referenced.concat(Syntax.namesIn(&expression))
+  }
+  Ok(fn(event: &Log.Event) -> Str {
+      let within = Evaluator.Scope{..Evaluator.scopeOf(event, Clock.system()()), referenced: referenced}
+      Template.render(&nodes, &within)
+    })
+}

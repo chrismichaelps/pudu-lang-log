@@ -1,0 +1,83 @@
+/** @Test.Domain.Clef.Suite — compact JSON lines read back into events */
+module PuduLangLog.Domain.ClefTest
+
+import Std.Io as Io
+import Std.Option as Option
+import Std.Test as Test
+import PuduLangLog.Domain.Clef as Clef
+import PuduLangLog as Log
+import PuduLangLog.Value as Value
+
+/// The event a line describes, or none.
+fn read(text: Str) -> Option[Log.Event] {
+  match Clef.line(text) {
+    case Ok(event) => Some(event)
+    case Err(_) => None
+  }
+}
+
+/// Why a line cannot be read, or `read` when it can.
+fn refusal(text: Str) -> Str {
+  match Clef.line(text) {
+    case Ok(_) => "read"
+    case Err(problem) => problem
+  }
+}
+
+/// The failure of the event a line describes.
+fn failureIn(text: Str) -> Option[Log.Failure] { Option.andThen(read(text), |event: Log.Event| event.failure) }
+
+/// Runs the suite.
+fn main() -> Int {
+  let minimal = read("\{\"@t\":\"2026-09-28T14:05:09.1230000Z\",\"@mt\":\"Hello \{Name\}\",\"Name\":\"Ada\"\}")
+  let offset = read("\{\"@t\":\"2026-09-28T16:05:09.123+02:00\",\"@mt\":\"x\"\}")
+  let behind = read("\{\"@t\":\"2026-09-28T09:35:09.123-04:30\",\"@mt\":\"x\"\}")
+  let rendered = read("\{\"@t\":\"2026-09-28T14:05:09Z\",\"@m\":\"Set \{a\} to 1\",\"@i\":\"abc\"\}")
+  let bare = read("\{\"@t\":\"2026-09-28T14:05:09Z\"\}")
+  let values = read("\{\"@t\":\"2026-09-28T14:05:09Z\",\"@mt\":\"v\",\"@r\":[\"1\"],\"n\":null,\"b\":true,\"i\":-4,\"d\":1.50,\"s\":\"x\",\"l\":[1,\"a\"],\"o\":\{\"A\":1,\"$type\":\"User\"\},\"u\":\{\"B\":2\},\"@@odd\":1\}")
+  let checks = Test.suite("Domain.Clef", &[
+      Test.equals("the timestamp is read in UTC", &Option.map(minimal, |event: Log.Event| event.timestamp), &Some(Log.Timestamp{millis: 1790604309123, offset: 0})),
+      Test.equals("a positive offset is kept in minutes", &Option.map(offset, |event: Log.Event| event.timestamp), &Some(Log.Timestamp{millis: 1790604309123, offset: 120})),
+      Test.equals("a negative offset is kept in minutes", &Option.map(behind, |event: Log.Event| event.timestamp), &Some(Log.Timestamp{millis: 1790604309123, offset: -270})),
+      Test.equals("the template and its properties", &Option.map(minimal, |event: Log.Event| (event.template.text, event.properties, event.level)), &Some(("Hello \{Name\}", [Value.property("Name", Value.text("Ada"))], Log.Information))),
+      Test.equals("a rendered message becomes an escaped template", &Option.map(rendered, |event: Log.Event| (event.template.text, event.template.holes.length(), event.properties.length())), &Some(("Set \{\{a\}\} to 1", 0, 0))),
+      Test.equals("no template reads as empty", &Option.map(bare, |event: Log.Event| event.template.text), &Some("")),
+      Test.equals("values of every kind", &Option.map(values, |event: Log.Event| event.properties), &Some([
+            Value.property("n", Value.nothing()),
+            Value.property("b", Value.bool(true)),
+            Value.property("i", Value.int(-4)),
+            Value.property("d", Value.decimal(1.50d)),
+            Value.property("s", Value.text("x")),
+            Value.property("l", Value.list([Value.int(1), Value.text("a")])),
+            Value.property("o", Value.structure("User", [("A", Value.int(1))])),
+            Value.property("u", Value.object([("B", Value.int(2))])),
+            Value.property("@odd", Value.int(1))
+          ])),
+      Test.equals("levels, trace, and span", &Option.map(read("\{\"@t\":\"2026-09-28T14:05:09Z\",\"@l\":\"warning\",\"@tr\":\"t1\",\"@sp\":\"s1\"\}"), |event: Log.Event| (event.level, event.traceId, event.spanId)), &Some((Log.Warning, Some("t1"), Some("s1")))),
+      Test.equals("a failure with a kind and message", &failureIn("\{\"@t\":\"2026-09-28T14:05:09Z\",\"@x\":\"IoError: disk: full\"\}"), &Some(Log.Failure{kind: "IoError", message: "disk: full", trace: [], causes: []})),
+      Test.equals("a failure with only a kind", &failureIn("\{\"@t\":\"2026-09-28T14:05:09Z\",\"@x\":\"Timeout\"\}"), &Some(Log.Failure{kind: "Timeout", message: "", trace: [], causes: []})),
+      Test.equals("a failure with message lines, a trace, and a chain of causes", &failureIn("\{\"@t\":\"2026-09-28T14:05:09Z\",\"@x\":\"Outer: first\\nsecond\\n   at a\\n   at b\\n ---> Middle: m\\n   at c\\n ---> Inner: i\"\}"), &Some(Log.Failure{kind: "Outer", message: "first\nsecond", trace: ["a", "b"], causes: [Log.Failure{kind: "Middle", message: "m", trace: ["c"], causes: [Log.Failure{kind: "Inner", message: "i", trace: [], causes: []}]}]})),
+      Test.equals("refusals", &[
+          refusal("not json"),
+          refusal("[1]"),
+          refusal("\{\"@mt\":\"x\"\}"),
+          refusal("\{\"@t\":\"yesterday\"\}"),
+          refusal("\{\"@t\":\"2026-09-28T14:05:09Z\",\"@l\":\"Loud\"\}"),
+          refusal("\{\"@t\":\"2026-09-28T14:05:09Z\",\"@mt\":3\}"),
+          refusal("\{\"@t\":1\}")
+        ], &[
+          "The line is not JSON: expected a value at 0",
+          "The event is not a JSON object",
+          "The event has no `@t` timestamp",
+          "The timestamp `yesterday` is not RFC 3339",
+          "Unknown level `Loud`",
+          "The `@mt` member is not text",
+          "The `@t` member is not text"
+        ])
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}
