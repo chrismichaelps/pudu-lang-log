@@ -1,0 +1,77 @@
+/** @Log.Web.Correlation.Middleware — one identifier carried across a request */
+module PuduLangLog.Web.Correlation
+
+import Std.Http.Server.Route as Route
+import Std.Http as Web
+import Std.Random as Random
+import Std.Time as Time
+import PuduLangLog.Domain.Json as Json
+import PuduLangLog as Log
+import PuduLangLog.Logger as Logger
+import PuduLangLog.Web.Diagnostic as Diagnostic
+
+/** @Log.Web.Correlation.Options — the header, property, and identifier source */
+export type Options = { header: Str, property: Str, echo: Bool, generate: fn() -> Str }
+
+/// The header carrying the identifier unless another is chosen.
+export const HEADER: Str = "x-correlation-id"
+
+/// The property carrying the identifier unless another is chosen.
+export const PROPERTY: Str = "CorrelationId"
+
+/// Random bytes in a generated identifier.
+const IDENTIFIER_BYTES: Int = 16
+
+/// The `x-correlation-id` header, the `CorrelationId` property, the identifier echoed on the
+/// response, and random identifiers for requests that bring none.
+export fn defaults() -> Options { Options{header: HEADER, property: PROPERTY, echo: true, generate: randomIdentifier} }
+
+/// Thirty-two lower-case hexadecimal digits from a secure random source, or from the clock when no
+/// such source is available.
+export fn randomIdentifier() -> Str {
+  match Random.secureBytes(IDENTIFIER_BYTES) {
+    case Ok(bytes) => Json.hexOf(&bytes).toLower()
+    case Err(_) => show(Time.currentInstant()) + "-" + show(Time.elapsed())
+  }
+}
+
+/// The request's identifier: its header when present and not blank, and otherwise none.
+export fn identifierOf(request: &Route.Request, options: &Options) -> Option[Str] {
+  let found = Route.header(request, options.header) ?
+  if found.trim().isEmpty() { None } else { Some(found.trim()) }
+}
+
+/// A middleware giving every request an identifier: the one its header brings, or a generated one
+/// set on the request's header for the handlers after it. The response carries the identifier
+/// when `echo` is set and the handler did not set the header itself.
+export fn middleware(options: Options) -> Route.Middleware {
+  fn(request: Route.Request, next: Route.Handler) -> Web.Response {
+    let (identifier, forwarded) = match identifierOf(&request, &options) {
+      case Some(found) => (found, request)
+      case None => {
+        let generated = (options.generate)()
+        let others = request.message.headers.filter(|entry: (Str, Str)| entry[0].toLower() != options.header.toLower())
+        (generated, Route.Request{..request, message: Web.Request{..request.message, headers: others.push((options.header, generated))}})
+      }
+    }
+    let response = next(forwarded)
+    if !options.echo || Web.header(&response.headers, options.header) != None { return response }
+    Web.Response{..response, headers: response.headers.push((options.header, identifier))}
+  }
+}
+
+/// The logger with the request's identifier as a property, for a handler's own events; the logger
+/// unchanged when the request has none.
+export fn loggerFor(logger: &Logger.Logger, request: &Route.Request, options: &Options) -> Logger.Logger {
+  match identifierOf(request, options) {
+    case Some(identifier) => logger.forContext(options.property, Log.Scalar(Log.Text(identifier)))
+    case None => *logger
+  }
+}
+
+/// An enrichment for request logging that adds the request's identifier to its completion event.
+export fn enrich(options: Options) -> fn(&Diagnostic.Collector, &Route.Request, &Web.Response) -> () {
+  fn(collector: &Diagnostic.Collector, request: &Route.Request, _response: &Web.Response) -> () {
+    if let Some(identifier) = identifierOf(request, &options) { Diagnostic.set(collector, options.property, Log.Scalar(Log.Text(identifier))) }
+  }
+}

@@ -1,0 +1,62 @@
+/** @Log.Bridge.Adapter — standard library log lines written as events */
+module PuduLangLog.Bridge
+
+import Std.Log as Standard
+import Std.Option as Option
+import Std.Out as Out
+import PuduLangLog.Constants.Names as Names
+import PuduLangLog.Domain.Parser as Parser
+import PuduLangLog as Log
+import PuduLangLog.Logger as Logger
+import PuduLangLog.Pipeline as Pipeline
+
+/// A `Std.Log` logger whose lines become events of this logger: `Debug` through `Fatal` keep their
+/// meaning, the logger's name becomes `SourceContext`, each field a text property, and the message
+/// the event's text with its braces escaped. The standard logger prints nothing itself; which lines
+/// are kept is this logger's decision.
+export fn standard(logger: &Logger.Logger) -> Standard.Logger {
+  let shared = *logger
+  Standard.Logger {
+    least: Standard.Debug,
+    name: "",
+    fields: [],
+    format: fn(line: Standard.Line) -> Str {
+      forward(&shared, &line)
+      ""
+    },
+    printer: Out.bare()
+  }
+}
+
+/// The level of a standard line; `Silent` lines are never formatted.
+export fn levelOf(level: Standard.Level) -> Log.Level {
+  match level {
+    case Standard.Debug => Log.Debug
+    case Standard.Info => Log.Information
+    case Standard.Warn => Log.Warning
+    case Standard.Error => Log.Error
+    case _ => Log.Fatal
+  }
+}
+
+/// Writes a standard line as an event.
+fn forward(logger: &Logger.Logger, line: &Standard.Line) -> () {
+  let named = if line.name.isEmpty() { *logger } else { logger.forSource(line.name) }
+  let level = levelOf(line.level)
+  if !named.isEnabled(level) { return () }
+  let pipeline = Logger.pipelineOf(&named)
+  var properties: Array[Log.Property] = []
+  for field in line.fields {
+    if Parser.isValidName(field.key) && field.key != Names.SOURCE_CONTEXT { properties = properties.push(Log.Property{name: field.key, value: Log.Scalar(Log.Text(field.value))}) }
+  }
+  let text = line.message.replace("\{", "\{\{").replace("\}", "\}\}")
+  let _written = named.emit(Log.Event {
+      timestamp: (pipeline.clock)(),
+      level: level,
+      template: Pipeline.templateOf(&pipeline, text),
+      properties: properties,
+      failure: None,
+      traceId: Option.map(named.trace, |pair: (Str, Str)| pair[0]),
+      spanId: Option.map(named.trace, |pair: (Str, Str)| pair[1])
+    })
+}
