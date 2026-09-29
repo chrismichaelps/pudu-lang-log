@@ -22,6 +22,46 @@ the lifecycle of flushing, closing, and [[domain/Bootstrap|reloading]].
 ### Signatures
 
 ```pudu
+export type Logger = { root: Root, context: Array[Enricher.Enricher], source: Option[Str], trace: Option[(Str, Str)] }
+
+export type Root = Fixed(Pipeline.Pipeline) | Reloadable(Sync.Cell[Pipeline.Pipeline])
+
+export fn fromPipeline(pipeline: Pipeline.Pipeline) -> Logger
+
+export fn reloadable(pipeline: Pipeline.Pipeline) -> Logger
+
+export fn reload(logger: &Logger, pipeline: Pipeline.Pipeline) -> Bool
+
+export fn none() -> Logger
+
+export fn pipelineOf(logger: &Logger) -> Pipeline.Pipeline
+
+export fn flush(logger: &Logger) -> ()
+
+export fn close(logger: &Logger) -> ()
+
+export fn asSink(logger: &Logger) -> Sink.Sink
+
+export trait Logging {
+  fn isEnabled(self: &Self, level: Log.Level) -> Bool
+  fn write(self: &Self, level: Log.Level, template: Str, arguments: Array[Log.Value]) -> ()
+  fn writeFailure(self: &Self, level: Log.Level, failure: Log.Failure, template: Str, arguments: Array[Log.Value]) -> ()
+  fn tryWrite(self: &Self, level: Log.Level, failure: Option[Log.Failure], template: Str, arguments: Array[Log.Value]) -> Result[(), Str]
+  fn emit(self: &Self, event: Log.Event) -> Result[(), Str]
+  fn verbose(self: &Self, template: Str, arguments: Array[Log.Value]) -> ()
+  fn debug(self: &Self, template: Str, arguments: Array[Log.Value]) -> ()
+  fn information(self: &Self, template: Str, arguments: Array[Log.Value]) -> ()
+  fn warning(self: &Self, template: Str, arguments: Array[Log.Value]) -> ()
+  fn error(self: &Self, template: Str, arguments: Array[Log.Value]) -> ()
+  fn fatal(self: &Self, template: Str, arguments: Array[Log.Value]) -> ()
+  fn forContext(self: &Self, name: Str, held: Log.Value) -> Self
+  fn forContextDestructured(self: &Self, name: Str, held: Log.Value) -> Self
+  fn forSource(self: &Self, source: Str) -> Self
+  fn forEnricher(self: &Self, enricher: Enricher.Enricher) -> Self
+  fn withTrace(self: &Self, traceId: Str, spanId: Str) -> Self
+  fn bindTemplate(self: &Self, template: Str, arguments: Array[Log.Value]) -> (Log.Template, Array[Log.Property])
+  fn bindProperty(self: &Self, name: Str, held: Log.Value, destructure: Bool) -> Option[Log.Property]
+}
 ```
 
 ### Linkage
@@ -69,7 +109,7 @@ DEPTH 0.85 (DEEP). Tested by `test/PuduLangLog/LoggerTest` and `test/PuduLangLog
   nesting calls. _Rejected:_ `Logger.information(&Logger.forSource(&logger, …), …)`.
 - **Q:** Why no global default logger?
   **A:** Pudu has no mutable module state; a program passes its logger, or a reloadable one built
-  at startup, to the code that writes. See [[decisions/ADR-0001-explicit-loggers]].
+  at startup, to the code that writes. See [[decisions/ADR-0002-explicit-logger]].
   _Rejected:_ hidden global state.
 - **Q:** Why capture `forContext` values at once?
   **A:** The value is the one current when the context was made; capturing later could observe a
@@ -77,4 +117,4 @@ DEPTH 0.85 (DEEP). Tested by `test/PuduLangLog/LoggerTest` and `test/PuduLangLog
 
 ## Referenced by
 
-(none)
+[[architecture/_MOC]] · [[CHANGELOG]] · [[domain/Bootstrap]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Bridge]] · [[src/PuduLangLog/Configuration]] · [[src/PuduLangLog/Constants/Names]] · [[src/PuduLangLog/Domain/Capture]] · [[src/PuduLangLog/Domain/Levels]] · [[src/PuduLangLog/Domain/Parser]] · [[src/PuduLangLog/Enricher]] · [[src/PuduLangLog/Pipeline]] · [[src/PuduLangLog/SelfLog]] · [[src/PuduLangLog/Sink]] · [[src/PuduLangLog/Timing]] · [[src/PuduLangLog/Web/Correlation]] · [[src/PuduLangLog/Web/RequestLogging]] · [[subsystems/Pipeline]]

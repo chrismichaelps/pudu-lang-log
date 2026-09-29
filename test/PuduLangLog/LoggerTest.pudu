@@ -67,6 +67,9 @@ fn main() -> Int {
   overridden.forSource("app.noisy.important").debug("important debug", [])
   overridden.forSource("App.NoisyNeighbour").information("neighbour info", [])
   overridden.information("plain info", [])
+  let truncatingMemory = Memory.create()
+  let truncating = base(&truncatingMemory).overrideLevel("App.Noisy", Log.Error).maximumStringLength(4).createLogger()
+  truncating.forSource("App.Noisy.Cache").warning("truncated source warning", [])
 
   let contextMemory = Memory.create()
   let noLines: Array[Str] = []
@@ -87,6 +90,7 @@ fn main() -> Int {
       Test.equals("a level switch changes what is written", &Memory.messages(&switchMemory), &["after"]),
       Test.equals("a listener hears each real change once", &Sync.get(&changes), &Ok(1)),
       Test.equals("overrides decide for their sources", &Memory.messages(&overrideMemory), &["noisy warning", "important debug", "neighbour info", "plain info"]),
+      Test.equals("overrides match the source as given, before truncation", &Memory.messages(&truncatingMemory), &[]),
       Test.equals("the source context is a property", &Event.sourceContext(&Memory.events(&overrideMemory)[0]), &Some("App.Noisy.Cache")),
       Test.equals("context properties join the event", &Event.property(&Memory.events(&contextMemory)[0], "JobId"), &Some(Value.int(8))),
       Test.equals("pipeline enrichers add properties", &Event.property(&Memory.events(&contextMemory)[0], "App"), &Some(Value.text("demo"))),

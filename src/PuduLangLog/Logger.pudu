@@ -199,7 +199,8 @@ impl Logging for Logger {
   }
 }
 
-/// A logger with a captured property added; the source context also selects overrides.
+/// A logger with a captured property added; the source context, as given and before any
+/// truncation, also selects overrides.
 fn contextual(logger: &Logger, name: Str, held: Log.Value, hint: Log.Hint) -> Logger {
   let pipeline = pipelineOf(logger)
   if !Parser.isValidName(name) {
@@ -208,7 +209,7 @@ fn contextual(logger: &Logger, name: Str, held: Log.Value, hint: Log.Hint) -> Lo
   }
   let captured = Capture.capture(&pipeline.policy, &held, hint)
   let enricher = Enricher.property(name, captured)
-  let source = match (name == Names.SOURCE_CONTEXT, captured) {
+  let source = match (name == Names.SOURCE_CONTEXT, held) {
     case (true, Log.Scalar(Log.Text(text))) => Some(text)
     case _ => logger.source
   }
