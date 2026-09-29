@@ -2,6 +2,9 @@
 module PuduLangLog.Expressions
 
 import PuduLangLog.Clock as Clock
+import PuduLangLog.Domain.Capture as Capture
+import PuduLangLog.Domain.Properties as Properties
+import PuduLangLog.Enricher as Enricher
 import PuduLangLog.Expressions.Evaluator as Evaluator
 import PuduLangLog.Expressions.Functions as Functions
 import PuduLangLog.Expressions.Parser as Parser
@@ -33,6 +36,19 @@ export fn evaluate(compiled: &Compiled, event: &Log.Event) -> Option[Log.Value] 
 export fn predicate(text: Str) -> Result[fn(&Log.Event) -> Bool, Str] {
   let compiled = compile(text) ?
   Ok(fn(event: &Log.Event) -> Bool { Values.isTrue(&evaluate(&compiled, event)) })
+}
+
+/// An enricher adding a property whose value is the expression evaluated for each event, unless
+/// the event already has the property or the expression is undefined for it.
+export fn computed(name: Str, text: Str) -> Result[Enricher.Enricher, Str] {
+  let compiled = compile(text) ?
+  Ok(fn(event: Log.Event, policy: &Capture.Policy) -> Log.Event {
+      if Properties.has(&event.properties, name) { return event }
+      match evaluate(&compiled, &event) {
+        case Some(held) => Log.Event{..event, properties: event.properties.push(Log.Property{name: name, value: Capture.capture(policy, &held, Log.Destructure)})}
+        case None => event
+      }
+    })
 }
 
 /// A formatter writing each event through an expression template of holes `{expression:format}`

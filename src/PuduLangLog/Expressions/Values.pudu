@@ -9,8 +9,12 @@ import PuduLangLog as Log
 /// A boolean value.
 export fn boolean(flag: Bool) -> Option[Log.Value] { Some(Log.Scalar(Log.Boolean(flag))) }
 
-/// An exact number value.
-export fn number(held: Decimal) -> Option[Log.Value] { Some(Log.Scalar(Log.Exact(held))) }
+/// An exact number value at the smallest scale that keeps it, so `1 / 4` is `0.25`.
+export fn number(held: Decimal) -> Option[Log.Value] {
+  var places = Decimal.scale(held)
+  while places > 0 && Decimal.rescale(held, places - 1) == held { places = places - 1 }
+  Some(Log.Scalar(Log.Exact(Decimal.rescale(held, places))))
+}
 
 /// A text value.
 export fn text(held: Str) -> Option[Log.Value] { Some(Log.Scalar(Log.Text(held))) }

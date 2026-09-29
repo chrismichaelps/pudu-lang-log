@@ -12,7 +12,7 @@ import PuduLangLog.Expressions.Values as Values
 import PuduLangLog as Log
 
 /// Function names that accept undefined arguments.
-const TOLERANT: Array[Str] = ["coalesce", "isdefined", "undefined", "now"]
+const TOLERANT: Array[Str] = ["coalesce", "isdefined", "typeof", "undefined", "now"]
 
 /// Every function name, in lower case.
 const KNOWN: Array[Str] = ["coalesce", "concat", "contains", "elementat", "endswith", "indexof", "indexofmatch", "inspect", "ismatch", "isdefined", "lastindexof", "length", "nest", "now", "replace", "rest", "round", "startswith", "substring", "tagof", "tostring", "typeof", "undefined", "utcdatetime"]
@@ -174,19 +174,26 @@ export fn elementAt(target: &Log.Value, key: &Log.Value, ignoring: Bool) -> Opti
 /// The kind of a value as text.
 fn typeOf(held: &Option[Log.Value]) -> Str {
   match held {
-    case None => "undefined"
-    case Some(Log.Scalar(Log.Null)) => "null"
-    case Some(Log.Scalar(Log.Boolean(_))) => "Bool"
-    case Some(Log.Scalar(Log.Integer(_))) => "Int"
-    case Some(Log.Scalar(Log.Real(_))) => "Float64"
-    case Some(Log.Scalar(Log.Exact(_))) => "Decimal"
-    case Some(Log.Scalar(Log.Text(_))) => "Str"
-    case Some(Log.Scalar(Log.Moment(_))) => "Timestamp"
-    case Some(Log.Scalar(Log.Span(_))) => "Duration"
-    case Some(Log.Scalar(Log.Binary(_))) => "Bytes"
+    case Some(Log.Scalar(atom)) => scalarKind(&atom)
     case Some(Log.Sequence(_)) => "array"
     case Some(Log.Structure(_)) => "object"
     case Some(Log.Dictionary(_)) => "dictionary"
+    case None => "undefined"
+  }
+}
+
+/// The kind of a scalar as text.
+fn scalarKind(atom: &Log.Scalar) -> Str {
+  match atom {
+    case Log.Null => "null"
+    case Log.Boolean(_) => "Bool"
+    case Log.Integer(_) => "Int"
+    case Log.Real(_) => "Float64"
+    case Log.Exact(_) => "Decimal"
+    case Log.Text(_) => "Str"
+    case Log.Moment(_) => "Timestamp"
+    case Log.Span(_) => "Duration"
+    case Log.Binary(_) => "Bytes"
   }
 }
 

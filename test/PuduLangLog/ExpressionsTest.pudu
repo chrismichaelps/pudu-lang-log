@@ -3,6 +3,7 @@ module PuduLangLog.ExpressionsTest
 
 import Std.Io as Io
 import Std.Test as Test
+import PuduLangLog.Domain.Capture as Capture
 import PuduLangLog.Event as Event
 import PuduLangLog.Expressions as Expressions
 import PuduLangLog.Failure as Failure
@@ -31,7 +32,7 @@ fn sample() -> Log.Event {
 fn value(text: Str) -> Option[Log.Value] {
   match Expressions.compile(text) {
     case Ok(compiled) => Expressions.evaluate(&compiled, &sample())
-    case Err(problem) => Some(Value.text("? " + problem))
+    case Err(reason) => Some(Value.text("? " + reason))
   }
 }
 
@@ -66,13 +67,13 @@ fn main() -> Int {
       Test.equals("arithmetic", &[value("Count + 2"), value("Count * Total"), value("Count - 5"), value("7 % 3"), value("1 / 4"), value("2 ^ 10"), value("-Count")], &[Some(Value.decimal(5d)), Some(Value.decimal(37.5d)), Some(Value.decimal(-2d)), Some(Value.decimal(1d)), Some(Value.decimal(0.25d)), Some(Value.float(1024.0)), Some(Value.decimal(-3d))]),
       Test.equals("division by zero is undefined", &(value("1 / 0"), value("1 % 0"), value("'a' + 1")), &(None, None, None)),
       Test.equals("precedence", &[value("1 + 2 * 3"), value("(1 + 2) * 3"), value("2 ^ 3 ^ 2"), value("-2 ^ 2")], &[Some(Value.decimal(7d)), Some(Value.decimal(9d)), Some(Value.float(512.0)), Some(Value.float(4.0))]),
-      Test.equals("conditionals", &(value("if Count > 2 then 'many' else 'few'"), value("if Missing then 1 else 2")), &(Some(Value.text("many")), Some(Value.decimal(2d)))),
+      Test.equals("conditionals", &(value("if Count > 2 then 'many' else 'few'"), value("if Missing then 1 else 2")), &(Some(Value.text("many")), Some(Value.int(2)))),
       Test.equals("array literals and spreads", &value("[1, ..Tags, Missing]"), &Some(Value.list([Value.int(1), Value.text("new"), Value.text("vip")]))),
       Test.equals("object literals, bare names, spreads, and undefined members", &value("\{a: 1, 'b c': 2, User, ..Order, Id: Undefined()\}"), &Some(Value.object([("a", Value.int(1)), ("b c", Value.int(2)), ("User", Value.text("Ada"))]))),
-      Test.that("wildcards", holds("Tags[?] = 'vip'") && !holds("Tags[*] = 'vip'") && holds("Tags[*] like '%e%' or Tags[*] like '%i%'") && holds("Cart.Items[?].Price > 10") && !holds("Cart.Items[*].Price > 10") && holds("StartsWith(Tags[?], 'n')")),
+      Test.that("wildcards", holds("Tags[?] = 'vip'") && !holds("Tags[*] = 'vip'") && holds("Tags[*] like '%e%' or Tags[?] like 'v%'") && !holds("Tags[*] like '%e%' or Tags[*] like '%i%'") && holds("Cart.Items[?].Price > 10") && !holds("Cart.Items[*].Price > 10") && holds("StartsWith(Tags[?], 'n')")),
       Test.that("wildcards over nothing", !holds("Missing[?] = 1") && holds("[][*] = 1")),
       Test.equals("text functions", &[value("StartsWith(User, 'A')"), value("EndsWith(User, 'A') ci"), value("Contains(SourceContext, 'Web')"), value("IndexOf(User, 'a')"), value("LastIndexOf(SourceContext, '.')"), value("LastIndexOf(User, 'z')"), value("Length(User)"), value("Length(Tags)")], &[Some(Value.bool(true)), Some(Value.bool(true)), Some(Value.bool(true)), Some(Value.int(2)), Some(Value.int(7)), Some(Value.int(-1)), Some(Value.int(3)), Some(Value.int(2))]),
-      Test.equals("more text functions", &[value("Substring(SourceContext, 4)"), value("Substring(SourceContext, 4, 3)"), value("Replace(SourceContext, '.', '/')"), value("Replace(User, 'A', 'e') ci"), value("Concat(User, '-', 'x')"), value("Substring(SourceContext, LastIndexOf(SourceContext, '.') + 1)")], &[Some(Value.text("Web.Api")), Some(Value.text("Web")), Some(Value.text("App/Web/Api")), Some(Value.text("edo")), Some(Value.text("Ada-x")), Some(Value.text("Api"))]),
+      Test.equals("more text functions", &[value("Substring(SourceContext, 4)"), value("Substring(SourceContext, 4, 3)"), value("Replace(SourceContext, '.', '/')"), value("Replace(User, 'A', 'e') ci"), value("Concat(User, '-', 'x')"), value("Substring(SourceContext, LastIndexOf(SourceContext, '.') + 1)")], &[Some(Value.text("Web.Api")), Some(Value.text("Web")), Some(Value.text("App/Web/Api")), Some(Value.text("ede")), Some(Value.text("Ada-x")), Some(Value.text("Api"))]),
       Test.equals("regular expressions", &[value("IsMatch(User, '^A.a$')"), value("IndexOfMatch(SourceContext, 'W[a-z]+')"), value("IsMatch(User, '^ADA$') ci"), value("IsMatch(User, '(')")], &[Some(Value.bool(true)), Some(Value.int(4)), Some(Value.bool(true)), None]),
       Test.equals("definition and coalescing", &[value("IsDefined(Missing)"), value("IsDefined(Nothing)"), value("Coalesce(Missing, Nothing, User)"), value("Coalesce(Missing)")], &[Some(Value.bool(false)), Some(Value.bool(true)), Some(Value.text("Ada")), None]),
       Test.equals("type functions", &[value("TypeOf(User)"), value("TypeOf(Count)"), value("TypeOf(Tags)"), value("TypeOf(Order)"), value("TypeOf(Meta)"), value("TypeOf(Missing)"), value("TypeOf(Nothing)"), value("TagOf(Order)")], &[Some(Value.text("Str")), Some(Value.text("Int")), Some(Value.text("array")), Some(Value.text("object")), Some(Value.text("dictionary")), Some(Value.text("undefined")), Some(Value.text("null")), Some(Value.text("Order"))]),
@@ -86,6 +87,18 @@ fn main() -> Int {
       Test.that("a predicate from text", match Expressions.predicate("@l = 'Warning' and Count >= 3") {
           case Ok(test) => test(&sample()) && !test(&Log.Event{..sample(), level: Log.Information})
           case Err(_) => false
+        }),
+      Test.equals("a computed property", &match Expressions.computed("Area", "Substring(SourceContext, 4)") {
+          case Ok(enricher) => Event.property(&enricher(sample(), &Capture.defaults()), "Area")
+          case Err(_) => None
+        }, &Some(Value.text("Web.Api"))),
+      Test.equals("a computed property keeps an existing one and skips undefined values", &match (Expressions.computed("User", "'other'"), Expressions.computed("Gone", "Missing")) {
+          case (Ok(existing), Ok(undefined)) => (Event.property(&existing(sample(), &Capture.defaults()), "User"), Event.property(&undefined(sample(), &Capture.defaults()), "Gone"))
+          case _ => (None, Some(Value.nothing()))
+        }, &(Some(Value.text("Ada")), None)),
+      Test.that("a computed property refuses bad text", match Expressions.computed("X", "(") {
+          case Ok(_) => false
+          case Err(_) => true
         }),
       Test.that("a predicate refuses bad text", match Expressions.predicate("Count >") {
           case Ok(_) => false
