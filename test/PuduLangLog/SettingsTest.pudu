@@ -1,0 +1,148 @@
+/** @Test.Settings.Suite — configurations read from settings */
+module PuduLangLog.SettingsTest
+
+import Std.Env as Env
+import Std.Io as Io
+import Std.List as List
+import Std.Option as Option
+import Std.Result as Result
+import Std.Test as Test
+import PuduLangLog.Clock as Clock
+import PuduLangLog.Configuration as Configuration
+import PuduLangLog.Event as Event
+import PuduLangLog.LevelSwitch as LevelSwitch
+import PuduLangLog as Log
+import PuduLangLog.Logger as Logger
+import PuduLangLog.Settings.Registry as Registry
+import PuduLangLog.Settings as Settings
+import PuduLangLog.Sink as Sink
+import PuduLangLog.Sinks.Memory as Memory
+import PuduLangLog.Value as Value
+
+/// A registry adding a `Memory` sink writing to the store, whose `refuse` argument makes the
+/// factory fail.
+fn registryWith(memory: &Memory.Memory) -> Registry.Registry {
+  let store = *memory
+  Registry.standard().withSink("Memory", fn(arguments: &Array[(Str, Str)]) -> Result[Sink.Sink, Str] {
+      if Settings.argument(arguments, "refuse") != None { return Err("refused") }
+      Ok(Memory.sink(&store))
+    })
+}
+
+/// The loaded configuration of settings over a registry writing to the store.
+fn load(memory: &Memory.Memory, pairs: Array[(Str, Str)]) -> Result[Settings.Loaded, Array[Str]] {
+  Settings.apply(&Configuration.create().clock(Clock.fixed(Log.Timestamp{millis: 0, offset: 0})), &pairs, &registryWith(memory))
+}
+
+/// The problems of settings that fail to load.
+fn problemsOf(pairs: Array[(Str, Str)]) -> Array[Str] {
+  match load(&Memory.create(), pairs) {
+    case Ok(_) => []
+    case Err(problems) => problems
+  }
+}
+
+/// Runs the suite.
+fn main() -> Int {
+  let memory = Memory.create()
+  let loaded = load(&memory, [
+      ("MinimumLevel", "Debug"),
+      ("MinimumLevel:Override:App.Noisy", "Error"),
+      ("MinimumLevel:Override:App.Jobs", "$jobs"),
+      ("LevelSwitches:$jobs", "Warning"),
+      ("Properties:Application", "Shop"),
+      ("Enrich:0:Name", "EnvironmentName"),
+      ("Enrich:0:Args:variable", "PUDU_LANG_LOG_UNSET_VARIABLE"),
+      ("Filter:0:ByExcluding", "RequestPath like '/health%'"),
+      ("Destructure:MaximumStringLength", "8"),
+      ("Destructure:AsScalar:0", "Money"),
+      ("WriteTo:0:Name", "Memory"),
+      ("WriteTo:0:Args:restrictedToMinimumLevel", "Information"),
+      ("WriteTo:1:Name", "Console"),
+      ("WriteTo:1:Args:theme", "none"),
+      ("WriteTo:1:Args:restrictedToMinimumLevel", "Fatal")
+    ])
+  let logger = match &loaded {
+    case Ok(found) => found.configuration.createLogger()
+    case Err(_) => Logger.none()
+  }
+  logger.debug("hidden by the sink's minimum", [])
+  logger.information("Paid \{Amount\} for \{Item\}", [Value.structure("Money", [("Units", Value.int(5))]), Value.text("teapots")])
+  logger.information("Health \{RequestPath\}", [Value.text("/health/live")])
+  logger.forSource("App.Noisy.Parts").warning("noisy warning", [])
+  logger.forSource("App.Jobs").warning("job warning", [])
+  let jobs = Option.andThen(Result.ok(loaded), |found: Settings.Loaded| Settings.switchNamed(&found, "$jobs"))
+  if let Some(control) = jobs { LevelSwitch.set(&control, Log.Error) }
+  logger.forSource("App.Jobs").warning("job warning after", [])
+  let written = Memory.events(&memory)
+  let path = Env.temporaryDirectory() + "/pudu-lang-log-settings-test.json"
+  let _saved = Io.write(path, "\{\"Log\":\{\"MinimumLevel\":\"Warning\",\"WriteTo\":[\{\"Name\":\"Memory\"\}]\}\}")
+  let fromFile = Settings.fromJsonFile(path, "log")
+  let _removed = Io.remove(path)
+  let fromJsonFile = Result.map(fromFile, |pairs: Array[(Str, Str)]| Result.isOk(&load(&Memory.create(), pairs)))
+  let checks = Test.suite("Settings", &[
+      Test.that("the settings load", Result.isOk(&loaded)),
+      Test.equals("messages the sink kept", &Memory.messages(&memory), &["Paid \"Money \{…\" for \"teapots\"", "job warning"]),
+      Test.equals("properties and enrichers apply", &Option.map(List.first(&written), |event: Log.Event| (Event.property(&event, "Application"), Event.property(&event, "EnvironmentName"))), &Some((Some(Value.text("Shop")), Some(Value.text("Product…"))))),
+      Test.that("the declared switch is handed back", jobs != None && Option.andThen(Result.ok(loaded), |found: Settings.Loaded| Settings.switchNamed(&found, "other")) == None),
+      Test.equals("a JSON file", &fromJsonFile, &Ok(true)),
+      Test.that("a missing JSON file is refused", Result.isErr(&Settings.fromJsonFile(path, "Log"))),
+      Test.equals("problems of every kind are reported together", &problemsOf([
+            ("MinimumLevel", "Loud"),
+            ("Enrich:0", "Nobody"),
+            ("Enrich:1:Name", "EnvironmentVariable"),
+            ("Filter:0:ByExcluding", "Count >"),
+            ("WriteTo:0", "Nowhere"),
+            ("WriteTo:1:Name", "Memory"),
+            ("WriteTo:1:Args:refuse", "yes"),
+            ("WriteTo:2:Name", "Memory"),
+            ("WriteTo:2:Args:restrictedToMinimumLevel", "Loud"),
+            ("AuditTo:0:Name", "File")
+          ]), &[
+          "Unknown or malformed setting `MinimumLevel`",
+          "No enricher is registered as `Nobody`",
+          "The enricher `EnvironmentVariable`: The argument `variable` is required",
+          "The filter `Count >`: the expression ends too soon",
+          "No sink is registered as `Nowhere`",
+          "The sink `Memory`: refused",
+          "The sink `Memory`: `Loud` is not a level",
+          "The sink `File`: The argument `path` is required"
+        ]),
+      Test.equals("standard sinks refuse bad arguments", &problemsOf([
+            ("WriteTo:0:Name", "Console"),
+            ("WriteTo:0:Args:theme", "neon"),
+            ("WriteTo:1:Name", "Console"),
+            ("WriteTo:1:Args:formatter", "xml"),
+            ("WriteTo:2:Name", "File"),
+            ("WriteTo:2:Args:path", "x.log"),
+            ("WriteTo:2:Args:rollingInterval", "week"),
+            ("WriteTo:3:Name", "File"),
+            ("WriteTo:3:Args:path", "x.log"),
+            ("WriteTo:3:Args:buffered", "maybe"),
+            ("WriteTo:4:Name", "Http"),
+            ("WriteTo:4:Args:endpoint", " "),
+            ("WriteTo:5:Name", "Http"),
+            ("WriteTo:5:Args:endpoint", "http://localhost:1"),
+            ("WriteTo:5:Args:batchSizeLimit", "many"),
+            ("WriteTo:6:Name", "Console"),
+            ("WriteTo:6:Args:standardErrorFromLevel", "Loud"),
+            ("WriteTo:7:Name", "File"),
+            ("WriteTo:7:Args:path", "x.log"),
+            ("WriteTo:7:Args:fileSizeLimitBytes", "-5")
+          ]), &[
+          "The sink `Console`: Unknown theme `neon`",
+          "The sink `Console`: Unknown formatter `xml`",
+          "The sink `File`: `week` is not a rolling interval",
+          "The sink `File`: `maybe` is not a flag",
+          "The sink `Http`: The argument `endpoint` is empty",
+          "The sink `Http`: `many` is not a count",
+          "The sink `Console`: `Loud` is not a level",
+          "The sink `File`: `-5` is not a count"
+        ])
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

@@ -71,6 +71,8 @@ export type Event = {
 
 export type RollingInterval = Infinite | Year | Month | Day | Hour | Minute
 
+export const ROLLING_INTERVALS: Array[RollingInterval] = [Infinite, Year, Month, Day, Hour, Minute]
+
 export type Formatter = fn(&Event) -> Str
 ```
 
@@ -117,4 +119,4 @@ DEPTH 0.5 (MEDIUM). The shared language of [[domain/Event]], [[domain/Template]]
 
 ## Referenced by
 
-[[src/PuduLangLog/Domain/Capture]] · [[src/PuduLangLog/Domain/Dates]] · [[src/PuduLangLog/Domain/Display]] · [[src/PuduLangLog/Domain/Json]] · [[src/PuduLangLog/Domain/Levels]] · [[src/PuduLangLog/Domain/Output]] · [[src/PuduLangLog/Domain/Padding]] · [[src/PuduLangLog/Domain/Parser]] · [[src/PuduLangLog/Domain/Properties]] · [[src/PuduLangLog/Domain/Rolling]]
+[[decisions/ADR-0003-capture-at-write]] · [[domain/Capture]] · [[domain/Event]] · [[domain/Value]] · [[src/_MOC]] · [[src/PuduLangLog/Bridge]] · [[src/PuduLangLog/Clock]] · [[src/PuduLangLog/Configuration]] · [[src/PuduLangLog/Context]] · [[src/PuduLangLog/Domain/Capture]] · [[src/PuduLangLog/Domain/Clef]] · [[src/PuduLangLog/Domain/Dates]] · [[src/PuduLangLog/Domain/Display]] · [[src/PuduLangLog/Domain/Json]] · [[src/PuduLangLog/Domain/Levels]] · [[src/PuduLangLog/Domain/Masking]] · [[src/PuduLangLog/Domain/Output]] · [[src/PuduLangLog/Domain/Padding]] · [[src/PuduLangLog/Domain/Parser]] · [[src/PuduLangLog/Domain/Properties]] · [[src/PuduLangLog/Domain/Rolling]] · [[src/PuduLangLog/Domain/Settings]] · [[src/PuduLangLog/Enricher]] · [[src/PuduLangLog/Enrichers/Environment]] · [[src/PuduLangLog/Enrichers/Masking]] · [[src/PuduLangLog/Event]] · [[src/PuduLangLog/Expressions]] · [[src/PuduLangLog/Expressions/Evaluator]] · [[src/PuduLangLog/Expressions/Functions]] · [[src/PuduLangLog/Expressions/Parser]] · [[src/PuduLangLog/Expressions/Syntax]] · [[src/PuduLangLog/Expressions/Template]] · [[src/PuduLangLog/Expressions/Values]] · [[src/PuduLangLog/Failure]] · [[src/PuduLangLog/Filter]] · [[src/PuduLangLog/Formatting/Compact]] · [[src/PuduLangLog/Formatting/Json]] · [[src/PuduLangLog/Formatting/Reader]] · [[src/PuduLangLog/Formatting/Text]] · [[src/PuduLangLog/LevelSwitch]] · [[src/PuduLangLog/Logger]] · [[src/PuduLangLog/Pipeline]] · [[src/PuduLangLog/SelfLog]] · [[src/PuduLangLog/Settings]] · [[src/PuduLangLog/Settings/Registry]] · [[src/PuduLangLog/Sink]] · [[src/PuduLangLog/Sinks/Async]] · [[src/PuduLangLog/Sinks/Batching]] · [[src/PuduLangLog/Sinks/Console]] · [[src/PuduLangLog/Sinks/File]] · [[src/PuduLangLog/Sinks/Http]] · [[src/PuduLangLog/Sinks/Map]] · [[src/PuduLangLog/Sinks/Memory]] · [[src/PuduLangLog/Sinks/Observable]] · [[src/PuduLangLog/Sinks/Theme]] · [[src/PuduLangLog/Timing]] · [[src/PuduLangLog/Value]] · [[src/PuduLangLog/Web/Correlation]] · [[src/PuduLangLog/Web/Diagnostic]] · [[src/PuduLangLog/Web/RequestLogging]]

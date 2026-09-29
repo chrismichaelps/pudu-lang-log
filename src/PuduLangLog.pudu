@@ -67,5 +67,8 @@ export type Event = {
 /** @Log.RollingInterval.Period — how often a file sink starts afresh */
 export type RollingInterval = Infinite | Year | Month | Day | Hour | Minute
 
+/// Every rolling interval, longest first.
+export const ROLLING_INTERVALS: Array[RollingInterval] = [Infinite, Year, Month, Day, Hour, Minute]
+
 /** @Log.Formatter.Text — renders an event as text */
 export type Formatter = fn(&Event) -> Str

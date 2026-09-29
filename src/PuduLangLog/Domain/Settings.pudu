@@ -1,0 +1,296 @@
+/** @Log.Domain.Settings.Module — key-value settings read into a logging plan */
+module PuduLangLog.Domain.Settings
+
+import Std.Json as Json
+import Std.List as List
+import Std.Map as Map
+import Std.Option as Option
+import PuduLangLog.Domain.Levels as Levels
+import PuduLangLog as Log
+
+/** @Log.Domain.Settings.Target — a named sink or enricher and its arguments */
+export type Target = { name: Str, arguments: Array[(Str, Str)] }
+
+/** @Log.Domain.Settings.Filter — an expression that keeps or drops events */
+export type Filter = { including: Bool, expression: Str }
+
+/** @Log.Domain.Settings.Plan — every decision the settings make */
+export type Plan = {
+  minimum: Option[Log.Level],
+  controlledBy: Option[Str],
+  switches: Array[(Str, Log.Level)],
+  overrides: Array[(Str, Str)],
+  properties: Array[(Str, Str)],
+  enrichers: Array[Target],
+  sinks: Array[Target],
+  audits: Array[Target],
+  filters: Array[Filter],
+  maximumDepth: Option[Int],
+  maximumStringLength: Option[Int],
+  maximumCollectionCount: Option[Int],
+  scalars: Array[Str]
+}
+
+/** @Log.Domain.Settings.Read — a plan and the settings it could not use */
+export type Read = { plan: Plan, problems: Array[Str] }
+
+/** @Log.Domain.Settings.Group — one numbered or named entry of a section */
+type Group = { key: Str, target: Target }
+
+/** @Log.Domain.Settings.State — the plan so far and the entries of each section */
+type State = { plan: Plan, problems: Array[Str], enrichers: Array[Group], sinks: Array[Group], audits: Array[Group] }
+
+/// The rank of each rolling interval name, keyed in lower case.
+const INTERVALS: Map[Str, Int] = mapOf([("infinite", 0), ("year", 1), ("month", 2), ("day", 3), ("hour", 4), ("minute", 5)])
+
+/// The separator of nested keys in environment variable names.
+const ENVIRONMENT_SEPARATOR: Str = "__"
+
+/// The prefix naming a level switch where a level could stand.
+const SWITCH_MARK: Str = "$"
+
+/// The sink argument naming the level switch that controls it.
+export const LEVEL_SWITCH_ARGUMENT: Str = "levelSwitch"
+
+/// A plan that decides nothing.
+export fn empty() -> Plan {
+  Plan {
+    minimum: None,
+    controlledBy: None,
+    switches: [],
+    overrides: [],
+    properties: [],
+    enrichers: [],
+    sinks: [],
+    audits: [],
+    filters: [],
+    maximumDepth: None,
+    maximumStringLength: None,
+    maximumCollectionCount: None,
+    scalars: []
+  }
+}
+
+/// The plan colon-separated keys describe, and every setting that is unknown, malformed, or names
+/// a level switch never declared. Section and argument names ignore case; a later value for the
+/// same key replaces an earlier one; numbered and named entries keep the order they first appear.
+export fn read(pairs: &Array[(Str, Str)]) -> Read {
+  var state = State{plan: empty(), problems: [], enrichers: [], sinks: [], audits: []}
+  for pair in *pairs { state = setting(&state, pair[0], pair[1]) }
+  let plan = Plan{..state.plan, enrichers: targetsOf(&state.enrichers), sinks: targetsOf(&state.sinks), audits: targetsOf(&state.audits)}
+  Read{plan: plan, problems: state.problems.concat(unresolved(&plan))}
+}
+
+/// The state with one setting applied.
+fn setting(state: &State, key: Str, value: Str) -> State {
+  let parts = key.split(":").map(|part: Str| part.trim())
+  let section = Option.unwrapOr(List.first(&parts), "").toLower()
+  let rest = List.drop(&parts, 1)
+  let plan = state.plan
+  if section == "minimumlevel" { return minimumLevel(state, key, &rest, value) }
+  if section == "levelswitches" && rest.length() == 1 {
+    let level = match levelOf(value) {
+      case Some(found) => found
+      case None => { return refused(state, key) }
+    }
+    return State{..*state, plan: Plan{..plan, switches: put(&plan.switches, switchName(rest[0]), level)}}
+  }
+  if section == "properties" && rest.length() == 1 && !rest[0].isEmpty() { return State{..*state, plan: Plan{..plan, properties: put(&plan.properties, rest[0], value)}} }
+  if section == "enrich" { return grouped(state, key, &rest, value, 0) }
+  if section == "writeto" { return grouped(state, key, &rest, value, 1) }
+  if section == "auditto" { return grouped(state, key, &rest, value, 2) }
+  if section == "filter" && rest.length() == 2 {
+    let kind = rest[1].toLower()
+    if kind == "byexcluding" || kind == "byincludingonly" { return State{..*state, plan: Plan{..plan, filters: plan.filters.push(Filter{including: kind == "byincludingonly", expression: value})}} }
+  }
+  if section == "destructure" { return destructure(state, key, &rest, value) }
+  refused(state, key)
+}
+
+/// The state with a `MinimumLevel` setting applied: the default level, the switch controlling it,
+/// or the level or switch of a source prefix.
+fn minimumLevel(state: &State, key: Str, rest: &Array[Str], value: Str) -> State {
+  let plan = state.plan
+  let first = Option.unwrapOr(List.first(rest), "default").toLower()
+  if rest.length() < 2 && first == "default" {
+    let level = match levelOf(value) {
+      case Some(found) => found
+      case None => { return refused(state, key) }
+    }
+    return State{..*state, plan: Plan{..plan, minimum: Some(level)}}
+  }
+  if rest.length() == 1 && first == "controlledby" { return State{..*state, plan: Plan{..plan, controlledBy: Some(switchName(value))}} }
+  if rest.length() > 1 && first == "override" {
+    let source = List.drop(rest, 1).join(":")
+    let chosen = value.trim()
+    if source.isEmpty() || (!chosen.startsWith(SWITCH_MARK) && levelOf(chosen) == None) { return refused(state, key) }
+    return State{..*state, plan: Plan{..plan, overrides: put(&plan.overrides, source, chosen)}}
+  }
+  refused(state, key)
+}
+
+/// The state with an entry of `Enrich` (section 0), `WriteTo` (1), or `AuditTo` (2) set: `Section:i`
+/// or `Section:i:Name` names it, and `Section:i:Args:name` sets one of its arguments.
+fn grouped(state: &State, key: Str, rest: &Array[Str], value: Str, which: Int) -> State {
+  let groups = if which == 0 { state.enrichers } else if which == 1 { state.sinks } else { state.audits }
+  let entry = Option.unwrapOr(List.first(rest), "").toLower()
+  let field = Option.unwrapOr(List.get(rest, 1), "").toLower()
+  if entry.isEmpty() { return refused(state, key) }
+  let current = match List.find(&groups, |group: Group| group.key == entry) {
+    case Some(found) => found.target
+    case None => Target{name: "", arguments: []}
+  }
+  let updated = if rest.length() == 1 || (rest.length() == 2 && field == "name") {
+    Target{..current, name: value.trim()}
+  } else if rest.length() == 3 && field == "args" && !rest[2].isEmpty() {
+    Target{..current, arguments: put(&current.arguments, rest[2], value)}
+  } else {
+    return refused(state, key)
+  }
+  let others = groups.filter(|group: Group| group.key != entry)
+  let changed = if others.length() == groups.length() { groups.push(Group{key: entry, target: updated}) } else { groups.map(|group: Group| if group.key == entry { Group{key: entry, target: updated} } else { group }) }
+  if which == 0 { State{..*state, enrichers: changed} } else if which == 1 { State{..*state, sinks: changed} } else { State{..*state, audits: changed} }
+}
+
+/// The state with a `Destructure` setting applied: a capture limit, or a tag captured as text.
+fn destructure(state: &State, key: Str, rest: &Array[Str], value: Str) -> State {
+  let plan = state.plan
+  let first = Option.unwrapOr(List.first(rest), "").toLower()
+  if rest.length() == 2 && first == "asscalar" { return State{..*state, plan: Plan{..plan, scalars: plan.scalars.push(value.trim())}} }
+  if rest.length() != 1 { return refused(state, key) }
+  let limit = match count(value) {
+    case Some(found) => found
+    case None => { return refused(state, key) }
+  }
+  if first == "maximumdepth" { return State{..*state, plan: Plan{..plan, maximumDepth: Some(limit)}} }
+  if first == "maximumstringlength" { return State{..*state, plan: Plan{..plan, maximumStringLength: Some(limit)}} }
+  if first == "maximumcollectioncount" { return State{..*state, plan: Plan{..plan, maximumCollectionCount: Some(limit)}} }
+  refused(state, key)
+}
+
+/// The state with a setting reported as unusable.
+fn refused(state: &State, key: Str) -> State { State{..*state, problems: state.problems.push("Unknown or malformed setting `" + key + "`")} }
+
+/// The targets of a section's entries, in order.
+fn targetsOf(groups: &Array[Group]) -> Array[Target] { groups.map(|group: Group| group.target) }
+
+/// Every entry naming nothing and every reference to an undeclared level switch.
+fn unresolved(plan: &Plan) -> Array[Str] {
+  var problems: Array[Str] = []
+  let declared = plan.switches.map(|entry: (Str, Log.Level)| entry[0])
+  for (section, targets) in [("Enrich", plan.enrichers), ("WriteTo", plan.sinks), ("AuditTo", plan.audits)] {
+    for target in targets {
+      if target.name.isEmpty() { problems = problems.push("An entry of `" + section + "` names nothing") }
+    }
+  }
+  var references: Array[Str] = []
+  if let Some(name) = plan.controlledBy { references = references.push(name) }
+  for entry in plan.overrides {
+    if entry[1].startsWith(SWITCH_MARK) { references = references.push(switchName(entry[1])) }
+  }
+  for target in plan.sinks.concat(plan.audits) {
+    if let Some(name) = argument(&target, LEVEL_SWITCH_ARGUMENT) { references = references.push(switchName(name)) }
+  }
+  for name in references {
+    if !declared.contains(name) { problems = problems.push("The level switch `" + name + "` is not declared") }
+  }
+  problems
+}
+
+/// A switch name without its leading `$`, in lower case.
+export fn switchName(text: Str) -> Str {
+  let trimmed = text.trim()
+  (if trimmed.startsWith(SWITCH_MARK) { trimmed.drop(1) } else { trimmed }).toLower()
+}
+
+/// The level a setting's text names.
+export fn levelOf(text: Str) -> Option[Log.Level] { Levels.parse(text) }
+
+/// The rolling interval a setting's text names, ignoring case.
+export fn intervalOf(text: Str) -> Option[Log.RollingInterval] {
+  let rank = Map.get(&INTERVALS, text.trim().toLower()) ?
+  Some(Log.ROLLING_INTERVALS[rank])
+}
+
+/// A count of zero or more from a setting's text.
+export fn count(text: Str) -> Option[Int] {
+  let number = text.trim().toInt() ?
+  if number < 0 { None } else { Some(number) }
+}
+
+/// `true` or `false` from a setting's text, ignoring case.
+export fn flag(text: Str) -> Option[Bool] {
+  let lowered = text.trim().toLower()
+  if lowered == "true" { Some(true) } else if lowered == "false" { Some(false) } else { None }
+}
+
+/// A target's argument, its name ignoring case.
+export fn argument(target: &Target, name: Str) -> Option[Str] {
+  let found = List.find(&target.arguments, |entry: (Str, Str)| entry[0].toLower() == name.toLower()) ?
+  Some(found[1])
+}
+
+/// The pairs with a key replaced when present, ignoring case, and added otherwise.
+fn put[T](pairs: &Array[(Str, T)], key: Str, value: T) -> Array[(Str, T)] {
+  let others = pairs.filter(|entry: (Str, T)| entry[0].toLower() != key.toLower())
+  if others.length() == pairs.length() { return pairs.push((key, value)) }
+  pairs.map(|entry: (Str, T)| if entry[0].toLower() == key.toLower() { (key, value) } else { entry })
+}
+
+/// The settings of JSON text under a top-level section, its name ignoring case; the whole document
+/// when the section is empty. Objects nest with `:` and lists by index.
+export fn fromJson(text: Str, section: Str) -> Result[Array[(Str, Str)], Str] {
+  match Json.decode(text) {
+    case Ok(document) => Ok(flatten(&document, section))
+    case Err(problem) => Err("The settings are not JSON: " + Json.explain(&problem))
+  }
+}
+
+/// The settings a JSON document holds under a top-level section.
+fn flatten(document: &Json.Json, section: Str) -> Array[(Str, Str)] {
+  if section.isEmpty() { return entries(document, "") }
+  let members = match Json.asObject(document) {
+    case Some(found) => found
+    case None => { return [] }
+  }
+  match List.find(&members, |member: (Str, Json.Json)| member[0].toLower() == section.toLower()) {
+    case Some(found) => entries(&found[1], "")
+    case None => []
+  }
+}
+
+/// A JSON value's settings under a key prefix.
+fn entries(held: &Json.Json, prefix: Str) -> Array[(Str, Str)] {
+  match held {
+    case Json.Object(members) => {
+      var found: Array[(Str, Str)] = []
+      for member in members { found = found.concat(entries(&member[1], joined(prefix, member[0]))) }
+      found
+    }
+    case Json.List(items) => {
+      var found: Array[(Str, Str)] = []
+      var index = 0
+      for item in items {
+        found = found.concat(entries(&item, joined(prefix, show(index))))
+        index = index + 1
+      }
+      found
+    }
+    case Json.Null => [(prefix, "")]
+    case Json.Boolean(truth) => [(prefix, if truth { "true" } else { "false" })]
+    case Json.Number(number) => [(prefix, show(number))]
+    case Json.Fractional(digits) => [(prefix, digits)]
+    case Json.Text(text) => [(prefix, text)]
+  }
+}
+
+/// A nested key.
+fn joined(prefix: Str, name: Str) -> Str { if prefix.isEmpty() { name } else { prefix + ":" + name } }
+
+/// The setting key of an environment variable named `PREFIX__Section__Key`, the prefix ignoring
+/// case, or none for a variable outside the prefix.
+export fn environmentKey(name: Str, prefix: Str) -> Option[Str] {
+  let head = prefix + ENVIRONMENT_SEPARATOR
+  if name.length() <= head.length() || name.take(head.length()).toLower() != head.toLower() { return None }
+  Some(name.drop(head.length()).replace(ENVIRONMENT_SEPARATOR, ":"))
+}

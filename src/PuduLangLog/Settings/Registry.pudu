@@ -1,0 +1,207 @@
+/** @Log.Settings.Registry.Catalog — sinks and enrichers settings may name */
+module PuduLangLog.Settings.Registry
+
+import Std.List as List
+import PuduLangLog.Domain.Settings as Plan
+import PuduLangLog.Enricher as Enricher
+import PuduLangLog.Enrichers.Environment as Environment
+import PuduLangLog.Formatting.Compact as Compact
+import PuduLangLog.Formatting.Json as Json
+import PuduLangLog.Formatting.Text as Text
+import PuduLangLog as Log
+import PuduLangLog.Sink as Sink
+import PuduLangLog.Sinks.Batching as Batching
+import PuduLangLog.Sinks.Console as Console
+import PuduLangLog.Sinks.File as File
+import PuduLangLog.Sinks.Http as Http
+import PuduLangLog.Sinks.Theme as Theme
+
+/** @Log.Settings.Registry.SinkFactory — a sink built from its arguments */
+export type SinkFactory = fn(&Array[(Str, Str)]) -> Result[Sink.Sink, Str]
+
+/** @Log.Settings.Registry.EnricherFactory — an enricher built from its arguments */
+export type EnricherFactory = fn(&Array[(Str, Str)]) -> Result[Enricher.Enricher, Str]
+
+/** @Log.Settings.Registry.Catalog — factories by name */
+export type Registry = { sinks: Array[(Str, SinkFactory)], enrichers: Array[(Str, EnricherFactory)] }
+
+/// A registry naming nothing.
+export fn empty() -> Registry { Registry{sinks: [], enrichers: []} }
+
+/// A registry naming the sinks `Console`, `File`, and `Http`, and the enrichers `MachineName`,
+/// `EnvironmentUserName`, `EnvironmentName`, `EnvironmentVariable`, `ProcessId`, `ProcessName`, and
+/// `FailureDetail`.
+export fn standard() -> Registry {
+  empty()
+    .withSink("Console", console)
+    .withSink("File", file)
+    .withSink("Http", http)
+    .withEnricher("MachineName", fixed(Environment.machineName))
+    .withEnricher("EnvironmentUserName", fixed(Environment.environmentUserName))
+    .withEnricher("EnvironmentName", fn(arguments: &Array[(Str, Str)]) -> Result[Enricher.Enricher, Str] { Ok(Environment.environmentName(textOr(arguments, "variable", Environment.ENVIRONMENT_VARIABLE))) })
+    .withEnricher("EnvironmentVariable", fn(arguments: &Array[(Str, Str)]) -> Result[Enricher.Enricher, Str] { Ok(Environment.environmentVariable(required(arguments, "variable") ?)) })
+    .withEnricher("ProcessId", fixed(Environment.processId))
+    .withEnricher("ProcessName", fixed(Environment.processName))
+    .withEnricher("FailureDetail", fixed(Environment.failureDetail))
+}
+
+/** @Log.Settings.Registry.Registering — adding factories under names */
+export trait Registering {
+  fn withSink(self: &Self, name: Str, factory: SinkFactory) -> Self
+  fn withEnricher(self: &Self, name: Str, factory: EnricherFactory) -> Self
+}
+
+impl Registering for Registry {
+  /// The registry with a sink factory under a name, replacing one of the same name ignoring case.
+  fn withSink(self: &Self, name: Str, factory: SinkFactory) -> Self {
+    Registry{..*self, sinks: self.sinks.filter(|entry: (Str, SinkFactory)| entry[0].toLower() != name.toLower()).push((name, factory))}
+  }
+
+  /// The registry with an enricher factory under a name, replacing one of the same name ignoring
+  /// case.
+  fn withEnricher(self: &Self, name: Str, factory: EnricherFactory) -> Self {
+    Registry{..*self, enrichers: self.enrichers.filter(|entry: (Str, EnricherFactory)| entry[0].toLower() != name.toLower()).push((name, factory))}
+  }
+}
+
+/// The sink factory registered under a name, ignoring case.
+export fn sinkNamed(registry: &Registry, name: Str) -> Option[SinkFactory] {
+  let found = List.find(&registry.sinks, |entry: (Str, SinkFactory)| entry[0].toLower() == name.toLower()) ?
+  Some(found[1])
+}
+
+/// The enricher factory registered under a name, ignoring case.
+export fn enricherNamed(registry: &Registry, name: Str) -> Option[EnricherFactory] {
+  let found = List.find(&registry.enrichers, |entry: (Str, EnricherFactory)| entry[0].toLower() == name.toLower()) ?
+  Some(found[1])
+}
+
+/// A factory ignoring its arguments.
+fn fixed(build: fn() -> Enricher.Enricher) -> EnricherFactory {
+  fn(_arguments: &Array[(Str, Str)]) -> Result[Enricher.Enricher, Str] { Ok(build()) }
+}
+
+/// The console sink: `outputTemplate`, `theme` (`none`, `literate`, `grayscale`, `code`, or
+/// `sixteen`), `standardErrorFromLevel`, and `formatter` (`compact`, `rendered`, or `json`).
+fn console(arguments: &Array[(Str, Str)]) -> Result[Sink.Sink, Str] {
+  let base = Console.defaults()
+  let theme = match lookup(arguments, "theme") {
+    case Some(name) => themeOf(name) ?
+    case None => base.theme
+  }
+  let standardError = match lookup(arguments, "standardErrorFromLevel") {
+    case Some(text) => Some(levelOf(text) ?)
+    case None => None
+  }
+  Ok(Console.sink(Console.Options{..base, outputTemplate: textOr(arguments, "outputTemplate", base.outputTemplate), theme: theme, standardErrorFromLevel: standardError, formatter: namedFormatter(arguments) ?}))
+}
+
+/// The file sink: `path` (required), `outputTemplate`, `formatter`, `rollingInterval`,
+/// `fileSizeLimitBytes`, `rollOnFileSizeLimit`, `retainedFileCountLimit`, and `buffered`.
+fn file(arguments: &Array[(Str, Str)]) -> Result[Sink.Sink, Str] {
+  let base = File.defaults(required(arguments, "path") ?)
+  let formatter = match (namedFormatter(arguments) ?, lookup(arguments, "outputTemplate")) {
+    case (Some(named), _) => named
+    case (None, Some(output)) => Text.template(output)
+    case _ => base.formatter
+  }
+  let interval = match lookup(arguments, "rollingInterval") {
+    case Some(text) => optionOf(Plan.intervalOf(text), "rolling interval", text) ?
+    case None => base.rollingInterval
+  }
+  Ok(File.sink(File.Options {
+        ..base,
+        formatter: formatter,
+        rollingInterval: interval,
+        fileSizeLimitBytes: countOr(arguments, "fileSizeLimitBytes", base.fileSizeLimitBytes) ?,
+        rollOnFileSizeLimit: flagOr(arguments, "rollOnFileSizeLimit", base.rollOnFileSizeLimit) ?,
+        retainedFileCountLimit: countOr(arguments, "retainedFileCountLimit", base.retainedFileCountLimit) ?,
+        buffered: flagOr(arguments, "buffered", base.buffered) ?
+      }))
+}
+
+/// The HTTP sink: `endpoint` (required), `formatter`, `batchSizeLimit`, and `queueLimit`.
+fn http(arguments: &Array[(Str, Str)]) -> Result[Sink.Sink, Str] {
+  let base = Http.defaults(required(arguments, "endpoint") ?)
+  let formatter = match namedFormatter(arguments) ? {
+    case Some(named) => named
+    case None => base.formatter
+  }
+  let batchSize = match lookup(arguments, "batchSizeLimit") {
+    case Some(text) => optionOf(Plan.count(text), "count", text) ?
+    case None => base.batching.batchSizeLimit
+  }
+  let batching = Batching.Options{..base.batching, batchSizeLimit: batchSize, queueLimit: countOr(arguments, "queueLimit", base.batching.queueLimit) ?}
+  Ok(Http.sink(Http.Options{..base, formatter: formatter, batching: batching}))
+}
+
+/// The formatter an argument names, if any.
+fn namedFormatter(arguments: &Array[(Str, Str)]) -> Result[Option[Log.Formatter], Str] {
+  let name = match lookup(arguments, "formatter") {
+    case Some(text) => text.trim().toLower()
+    case None => { return Ok(None) }
+  }
+  let found = List.find(&formatters(), |entry: (Str, Log.Formatter)| entry[0] == name)
+  match found {
+    case Some(entry) => Ok(Some(entry[1]))
+    case None => Err("Unknown formatter `" + name + "`")
+  }
+}
+
+/// The formatters settings may name.
+fn formatters() -> Array[(Str, Log.Formatter)] { [("compact", Compact.compact()), ("rendered", Compact.rendered()), ("json", Json.formatter(Json.defaults()))] }
+
+/// The console theme a name denotes, ignoring case.
+fn themeOf(name: Str) -> Result[Theme.Theme, Str] {
+  let themes = [("none", Theme.none()), ("literate", Theme.literate()), ("grayscale", Theme.grayscale()), ("code", Theme.code()), ("sixteen", Theme.sixteen())]
+  match List.find(&themes, |entry: (Str, Theme.Theme)| entry[0] == name.trim().toLower()) {
+    case Some(entry) => Ok(entry[1])
+    case None => Err("Unknown theme `" + name + "`")
+  }
+}
+
+/// An argument's text, its name ignoring case.
+fn lookup(arguments: &Array[(Str, Str)], name: Str) -> Option[Str] { Plan.argument(&Plan.Target{name: "", arguments: *arguments}, name) }
+
+/// An argument's text, or a fallback.
+fn textOr(arguments: &Array[(Str, Str)], name: Str, fallback: Str) -> Str {
+  match lookup(arguments, name) {
+    case Some(text) => text
+    case None => fallback
+  }
+}
+
+/// An argument's text, or an error naming it.
+fn required(arguments: &Array[(Str, Str)], name: Str) -> Result[Str, Str] {
+  match lookup(arguments, name) {
+    case Some(text) => if text.trim().isEmpty() { Err("The argument `" + name + "` is empty") } else { Ok(text) }
+    case None => Err("The argument `" + name + "` is required")
+  }
+}
+
+/// A level argument.
+fn levelOf(text: Str) -> Result[Log.Level, Str] { optionOf(Plan.levelOf(text), "level", text) }
+
+/// A count argument, `none` for no limit, or a fallback when absent.
+fn countOr(arguments: &Array[(Str, Str)], name: Str, fallback: Option[Int]) -> Result[Option[Int], Str] {
+  match lookup(arguments, name) {
+    case Some(text) => if text.trim().toLower() == "none" { Ok(None) } else { Ok(Some(optionOf(Plan.count(text), "count", text) ?)) }
+    case None => Ok(fallback)
+  }
+}
+
+/// A `true` or `false` argument, or a fallback when absent.
+fn flagOr(arguments: &Array[(Str, Str)], name: Str, fallback: Bool) -> Result[Bool, Str] {
+  match lookup(arguments, name) {
+    case Some(text) => optionOf(Plan.flag(text), "flag", text)
+    case None => Ok(fallback)
+  }
+}
+
+/// A parsed value, or an error naming what the text is not.
+fn optionOf[T](parsed: Option[T], what: Str, text: Str) -> Result[T, Str] {
+  match parsed {
+    case Some(found) => Ok(found)
+    case None => Err("`" + text + "` is not a " + what)
+  }
+}
