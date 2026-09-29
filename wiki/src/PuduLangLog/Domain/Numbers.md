@@ -113,4 +113,4 @@ DEPTH 0.85 (DEEP). Three entry points over a small numeric language. Tested by
 
 ## Referenced by
 
-[[src/PuduLangLog/Domain/Display]] · [[src/PuduLangLog/Domain/Json]]
+[[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Domain/Display]] · [[src/PuduLangLog/Domain/Json]] · [[subsystems/Formatting]]

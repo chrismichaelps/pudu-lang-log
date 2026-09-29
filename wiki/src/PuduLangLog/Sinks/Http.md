@@ -21,6 +21,22 @@ default), with custom headers such as an API key.
 ### Signatures
 
 ```pudu
+export type Options = {
+  endpoint: Str,
+  headers: Array[(Str, Str)],
+  contentType: Str,
+  formatter: fn(&Log.Event) -> Str,
+  batching: Batching.Options,
+  transport: fn(&Web.Request) -> Result[Int, Str]
+}
+
+export fn defaults(endpoint: Str) -> Options
+
+export fn transport(limits: Client.Limits) -> fn(&Web.Request) -> Result[Int, Str]
+
+export fn requestOf(options: &Options, batch: &Array[Log.Event]) -> Web.Request
+
+export fn sink(options: Options) -> Sink.Sink
 ```
 
 ### Linkage
@@ -60,4 +76,4 @@ server.
 
 ## Referenced by
 
-(none)
+[[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Formatting/Compact]] · [[src/PuduLangLog/Settings/Registry]] · [[src/PuduLangLog/Sinks/Batching]] · [[subsystems/Sinks]]

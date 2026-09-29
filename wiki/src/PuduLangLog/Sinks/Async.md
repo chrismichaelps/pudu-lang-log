@@ -21,6 +21,28 @@ sink by a worker thread, dropped or waited for when the queue is full.
 ### Signatures
 
 ```pudu
+export type Options = { bufferSize: Int, blockWhenFull: Bool, selfLog: SelfLog.SelfLog }
+
+export type Async = {
+  inner: Sink.Sink,
+  options: Options,
+  queue: Channel.Channel[Log.Event],
+  accepted: Sync.Counter,
+  written: Sync.Counter,
+  dropped: Sync.Counter,
+  listener: Sync.Cell[Option[fn(&Sink.Report) -> ()]],
+  worker: Option[Concurrent.Task]
+}
+
+export fn defaults() -> Options
+
+export fn start(inner: Sink.Sink, options: Options) -> Async
+
+export fn sinkOf(queue: &Async) -> Sink.Sink
+
+export fn pending(queue: &Async) -> Int
+
+export fn dropped(queue: &Async) -> Int
 ```
 
 ### Linkage
@@ -62,4 +84,4 @@ DEPTH 0.7 (DEEP). Tested by `test/PuduLangLog/Sinks/AsyncTest`.
 
 ## Referenced by
 
-(none)
+[[src/PuduLangLog/_MOC]] · [[subsystems/Sinks]]

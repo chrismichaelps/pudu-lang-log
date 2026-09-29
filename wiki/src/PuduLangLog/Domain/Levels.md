@@ -79,4 +79,4 @@ DEPTH 0.7 (DEEP). Tested by `test/PuduLangLog/Domain/LevelsTest`.
 
 ## Referenced by
 
-[[src/PuduLangLog/Domain/Output]] · [[src/PuduLangLog/Domain/Padding]]
+[[domain/Level]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Domain/Clef]] · [[src/PuduLangLog/Domain/Output]] · [[src/PuduLangLog/Domain/Padding]] · [[src/PuduLangLog/Domain/Settings]] · [[src/PuduLangLog/Enricher]] · [[src/PuduLangLog/Expressions/Evaluator]] · [[src/PuduLangLog/Expressions/Template]] · [[src/PuduLangLog/Filter]] · [[src/PuduLangLog/Formatting/Compact]] · [[src/PuduLangLog/Formatting/Json]] · [[src/PuduLangLog/LevelSwitch]] · [[src/PuduLangLog/Pipeline]] · [[src/PuduLangLog/Sink]] · [[src/PuduLangLog/Sinks/Console]] · [[src/PuduLangLog/Timing]]

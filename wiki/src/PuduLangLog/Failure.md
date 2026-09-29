@@ -21,6 +21,15 @@ causes.
 ### Signatures
 
 ```pudu
+export fn of(kind: Str, message: Str) -> Log.Failure
+
+export fn from[E](kind: Str, error: E) -> Log.Failure
+
+export fn withTrace(problem: &Log.Failure, lines: Array[Str]) -> Log.Failure
+
+export fn causedBy(problem: &Log.Failure, cause: Log.Failure) -> Log.Failure
+
+export fn describe(problem: &Log.Failure) -> Str
 ```
 
 ### Linkage
@@ -54,4 +63,4 @@ DEPTH 0.3 (SHALLOW). Tested by `test/PuduLangLog/ValueTest`.
 
 ## Referenced by
 
-(none)
+[[domain/Failure]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Timing]]

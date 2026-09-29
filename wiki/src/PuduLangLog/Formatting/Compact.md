@@ -22,6 +22,9 @@ identifier.
 ### Signatures
 
 ```pudu
+export fn compact() -> Log.Formatter
+
+export fn rendered() -> Log.Formatter
 ```
 
 ### Linkage
@@ -61,4 +64,4 @@ DEPTH 0.6 (MEDIUM). Tested by `test/PuduLangLog/Formatting/FormattingTest`.
 
 ## Referenced by
 
-(none)
+[[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Domain/EventId]] · [[src/PuduLangLog/Settings/Registry]] · [[src/PuduLangLog/Sinks/Http]] · [[subsystems/Formatting]]

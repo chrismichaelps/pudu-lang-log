@@ -21,6 +21,37 @@ Measures a unit of work and writes one event when it ends: `Charging 42 complete
 ### Signatures
 
 ```pudu
+export type Operation = {
+  logger: Logger.Logger,
+  template: Str,
+  arguments: Array[Log.Value],
+  started: Int,
+  completion: Log.Level,
+  abandonment: Log.Level,
+  warningAfter: Option[Int],
+  properties: Array[(Str, Log.Value)],
+  finished: Sync.Cell[Bool],
+  elapsed: fn() -> Int
+}
+
+export fn begin(logger: &Logger.Logger, template: Str, arguments: Array[Log.Value]) -> Operation
+
+export fn beginWith(logger: &Logger.Logger, template: Str, arguments: Array[Log.Value], elapsed: fn() -> Int) -> Operation
+
+export fn run[T](logger: &Logger.Logger, template: Str, arguments: Array[Log.Value], action: fn() -> T) -> T
+
+export fn runResult[T, E](logger: &Logger.Logger, template: Str, arguments: Array[Log.Value], kind: Str, action: fn() -> Result[T, E]) -> Result[T, E]
+
+export trait Measuring {
+  fn at(self: &Self, completion: Log.Level, abandonment: Log.Level) -> Self
+  fn warnAfter(self: &Self, millis: Int) -> Self
+  fn enrichWith(self: &Self, name: Str, held: Log.Value) -> Self
+  fn complete(self: &Self) -> ()
+  fn completeWith(self: &Self, name: Str, held: Log.Value) -> ()
+  fn abandon(self: &Self) -> ()
+  fn abandonWith(self: &Self, failure: Log.Failure) -> ()
+  fn cancel(self: &Self) -> ()
+}
 ```
 
 ### Linkage
@@ -61,4 +92,4 @@ DEPTH 0.6 (MEDIUM). Tested by `test/PuduLangLog/TimingTest`.
 
 ## Referenced by
 
-(none)
+[[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Clock]] · [[src/PuduLangLog/Failure]] · [[subsystems/Pipeline]]

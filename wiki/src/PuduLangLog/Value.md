@@ -21,6 +21,45 @@ structures, and dictionaries, and turns any `Capturable` type into one with `Val
 ### Signatures
 
 ```pudu
+export trait Capturable {
+  fn capture(self: &Self) -> Log.Value
+}
+
+export fn of[T: Capturable](held: T) -> Log.Value
+
+export fn text(held: Str) -> Log.Value
+
+export fn int(held: Int) -> Log.Value
+
+export fn float(held: Float64) -> Log.Value
+
+export fn decimal(held: Decimal) -> Log.Value
+
+export fn bool(held: Bool) -> Log.Value
+
+export fn nothing() -> Log.Value
+
+export fn moment(held: Log.Timestamp) -> Log.Value
+
+export fn duration(millis: Int) -> Log.Value
+
+export fn bytes(held: Bytes) -> Log.Value
+
+export fn list(items: Array[Log.Value]) -> Log.Value
+
+export fn structure(tag: Str, members: Array[(Str, Log.Value)]) -> Log.Value
+
+export fn object(members: Array[(Str, Log.Value)]) -> Log.Value
+
+export fn dictionary(entries: Array[(Str, Log.Value)]) -> Log.Value
+
+export fn keyed(entries: Array[(Log.Scalar, Log.Value)]) -> Log.Value
+
+export fn property(name: Str, held: Log.Value) -> Log.Property
+
+export fn render(held: &Log.Value) -> Str
+
+export fn json(held: &Log.Value) -> Str
 ```
 
 ### Linkage
@@ -63,4 +102,4 @@ DEPTH 0.6 (MEDIUM). Tested by `test/PuduLangLog/ValueTest`.
 
 ## Referenced by
 
-(none)
+[[domain/Value]] · [[src/PuduLangLog/_MOC]]

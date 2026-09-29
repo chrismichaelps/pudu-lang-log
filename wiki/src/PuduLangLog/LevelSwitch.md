@@ -21,6 +21,17 @@ program runs, with listeners told of each change.
 ### Signatures
 
 ```pudu
+export type LevelSwitch = { current: Sync.Cell[Log.Level], lock: Sync.Mutex, listeners: Sync.Cell[Array[fn(Log.Level, Log.Level) -> ()]] }
+
+export fn create(initial: Log.Level) -> LevelSwitch
+
+export fn level(control: &LevelSwitch) -> Log.Level
+
+export fn allows(control: &LevelSwitch, candidate: Log.Level) -> Bool
+
+export fn set(control: &LevelSwitch, next: Log.Level) -> ()
+
+export fn onChange(control: &LevelSwitch, listener: fn(Log.Level, Log.Level) -> ()) -> ()
 ```
 
 ### Linkage
@@ -56,4 +67,4 @@ DEPTH 0.5 (MEDIUM). Tested by `test/PuduLangLog/LoggerTest`.
 
 ## Referenced by
 
-(none)
+[[domain/Level]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Configuration]] · [[src/PuduLangLog/Enricher]] · [[src/PuduLangLog/Pipeline]] · [[src/PuduLangLog/Settings]] · [[src/PuduLangLog/Sink]]

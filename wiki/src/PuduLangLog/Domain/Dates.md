@@ -80,4 +80,4 @@ DEPTH 0.8 (DEEP). Tested by `test/PuduLangLog/Domain/DatesTest`.
 
 ## Referenced by
 
-[[src/PuduLangLog/Domain/Display]] · [[src/PuduLangLog/Domain/Json]] · [[src/PuduLangLog/Domain/Rolling]]
+[[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Domain/Display]] · [[src/PuduLangLog/Domain/Json]] · [[src/PuduLangLog/Domain/Rolling]] · [[src/PuduLangLog/Formatting/Compact]] · [[src/PuduLangLog/Formatting/Json]] · [[src/PuduLangLog/SelfLog]] · [[subsystems/Formatting]]

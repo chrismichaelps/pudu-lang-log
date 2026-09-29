@@ -25,6 +25,10 @@ corrected in the same change.
 | Calendar arithmetic | `Std.Time.Format` | `partsOf`, `millisOf`, `weekdayOf`, `daysFromCivil` |
 | Exact numbers | `Std.Decimal` | `fromInt`, `round`, `rescale`, `toText`, `scale` |
 | JSON documents | `Std.Json` | `decode`, `field`, `asText`, `asInt`, `asBool`, `asList`, `asObject` |
+| RFC 3339 moments | `Std.Time.Format` | `fromRfc3339` |
+| Regular expressions | `Std.Regex` | `compile`, `find`, `replaceAll`, `explain` |
+| Secure random bytes | `Std.Random` | `secureBytes` |
+| Standard library logging | `Std.Log`, `Std.Out` | `Logger`, `Line`, `Level`; `Out.bare` |
 | Environment | `Std.Env` | `variable`, `variableOr`, `at` |
 | Processes | `Std.Process` | `output` |
 | HTTP | `Std.Http`, `Std.Http.Client`, `Std.Http.Server.Route` | `Request`, `Response`, `send`, `Middleware` |
@@ -133,10 +137,22 @@ corrected in the same change.
   time; decimal values are built by a plain function
   ([pudu-lang#371](https://github.com/chrismichaelps/pudu-lang/issues/371)).
 
+- **There is no `??` operator.** An absent option ends a function through
+  `match … { case Some(found) => found case None => { return … } }`.
+- **Decimals inside options and records compare by representation**: `0.25d == 0.2500d` is true
+  but `Some(0.25d) == Some(0.2500d)` is false. Computed decimals are stored at their smallest scale
+  ([pudu-lang#376](https://github.com/chrismichaelps/pudu-lang/issues/376)).
+- **A tuple match of two options is not seen as exhaustive**; its last arm is `case _`
+  ([pudu-lang#377](https://github.com/chrismichaelps/pudu-lang/issues/377)).
+- **A program importing `Std.Json` misjudges `Some(...)` arms naming constructors that share
+  `Json`'s names** (`Null`, `Boolean`, `Text`) in another module; such matches take the option
+  apart first and match the inner value in its own function
+  ([pudu-lang#378](https://github.com/chrismichaelps/pudu-lang/issues/378)).
+
 ## Senior Definition Needed
 
 (none open)
 
 ## Referenced by
 
-[[00-INDEX]] · [[src/PuduLangLog]] · [[src/PuduLangLog/Domain/Capture]] · [[src/PuduLangLog/Domain/Dates]] · [[src/PuduLangLog/Domain/Display]] · [[src/PuduLangLog/Domain/EventId]] · [[src/PuduLangLog/Domain/Json]] · [[src/PuduLangLog/Domain/Levels]] · [[src/PuduLangLog/Domain/Numbers]] · [[src/PuduLangLog/Domain/Output]] · [[src/PuduLangLog/Domain/Padding]] · [[src/PuduLangLog/Domain/Parser]] · [[src/PuduLangLog/Domain/Properties]] · [[src/PuduLangLog/Domain/Rolling]] · [[src/PuduLangLog/Domain/Schedule]] · [[src/PuduLangLog/Domain/Sources]]
+[[00-INDEX]] · [[architecture/_MOC]] · [[src/PuduLangLog]] · [[src/PuduLangLog/Bridge]] · [[src/PuduLangLog/Clock]] · [[src/PuduLangLog/Configuration]] · [[src/PuduLangLog/Constants/Names]] · [[src/PuduLangLog/Context]] · [[src/PuduLangLog/Domain/Capture]] · [[src/PuduLangLog/Domain/Clef]] · [[src/PuduLangLog/Domain/Dates]] · [[src/PuduLangLog/Domain/Display]] · [[src/PuduLangLog/Domain/EventId]] · [[src/PuduLangLog/Domain/Json]] · [[src/PuduLangLog/Domain/Levels]] · [[src/PuduLangLog/Domain/Masking]] · [[src/PuduLangLog/Domain/Numbers]] · [[src/PuduLangLog/Domain/Output]] · [[src/PuduLangLog/Domain/Padding]] · [[src/PuduLangLog/Domain/Parser]] · [[src/PuduLangLog/Domain/Properties]] · [[src/PuduLangLog/Domain/Recency]] · [[src/PuduLangLog/Domain/Rolling]] · [[src/PuduLangLog/Domain/Schedule]] · [[src/PuduLangLog/Domain/Settings]] · [[src/PuduLangLog/Domain/Sources]] · [[src/PuduLangLog/Enricher]] · [[src/PuduLangLog/Enrichers/Environment]] · [[src/PuduLangLog/Enrichers/Masking]] · [[src/PuduLangLog/Event]] · [[src/PuduLangLog/Expressions]] · [[src/PuduLangLog/Expressions/Evaluator]] · [[src/PuduLangLog/Expressions/Functions]] · [[src/PuduLangLog/Expressions/Lexer]] · [[src/PuduLangLog/Expressions/Parser]] · [[src/PuduLangLog/Expressions/Syntax]] · [[src/PuduLangLog/Expressions/Template]] · [[src/PuduLangLog/Expressions/Values]] · [[src/PuduLangLog/Failure]] · [[src/PuduLangLog/Filter]] · [[src/PuduLangLog/Formatting/Compact]] · [[src/PuduLangLog/Formatting/Json]] · [[src/PuduLangLog/Formatting/Reader]] · [[src/PuduLangLog/Formatting/Text]] · [[src/PuduLangLog/LevelSwitch]] · [[src/PuduLangLog/Logger]] · [[src/PuduLangLog/Pipeline]] · [[src/PuduLangLog/SelfLog]] · [[src/PuduLangLog/Settings]] · [[src/PuduLangLog/Settings/Registry]] · [[src/PuduLangLog/Sink]] · [[src/PuduLangLog/Sinks/Async]] · [[src/PuduLangLog/Sinks/Batching]] · [[src/PuduLangLog/Sinks/Console]] · [[src/PuduLangLog/Sinks/File]] · [[src/PuduLangLog/Sinks/Http]] · [[src/PuduLangLog/Sinks/Map]] · [[src/PuduLangLog/Sinks/Memory]] · [[src/PuduLangLog/Sinks/Observable]] · [[src/PuduLangLog/Sinks/Theme]] · [[src/PuduLangLog/Timing]] · [[src/PuduLangLog/Value]] · [[src/PuduLangLog/Web/Correlation]] · [[src/PuduLangLog/Web/Diagnostic]] · [[src/PuduLangLog/Web/RequestLogging]] · [[tools/Mutate]]

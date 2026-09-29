@@ -21,6 +21,23 @@ pipeline or a contextual logger.
 ### Signatures
 
 ```pudu
+export type Enricher = fn(Log.Event, &Capture.Policy) -> Log.Event
+
+export fn property(name: Str, held: Log.Value) -> Enricher
+
+export fn destructured(name: Str, held: Log.Value) -> Enricher
+
+export fn computed(name: Str, compute: fn(&Log.Event) -> Log.Value, destructure: Bool) -> Enricher
+
+export fn from(change: fn(Log.Event) -> Log.Event) -> Enricher
+
+export fn when(condition: fn(&Log.Event) -> Bool, enricher: Enricher) -> Enricher
+
+export fn atLevel(minimum: Log.Level, enricher: Enricher) -> Enricher
+
+export fn atSwitch(control: &LevelSwitch.LevelSwitch, enricher: Enricher) -> Enricher
+
+export fn all(enrichers: Array[Enricher]) -> Enricher
 ```
 
 ### Linkage
@@ -59,4 +76,4 @@ DEPTH 0.6 (MEDIUM). Tested by `test/PuduLangLog/TopologyTest`.
 
 ## Referenced by
 
-(none)
+[[domain/Enrichment]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Configuration]] · [[src/PuduLangLog/Context]] · [[src/PuduLangLog/Domain/Capture]] · [[src/PuduLangLog/Enrichers/Environment]] · [[src/PuduLangLog/Enrichers/Masking]] · [[src/PuduLangLog/Expressions]] · [[src/PuduLangLog/LevelSwitch]] · [[src/PuduLangLog/Logger]] · [[src/PuduLangLog/Pipeline]] · [[src/PuduLangLog/Settings/Registry]] · [[subsystems/Pipeline]]

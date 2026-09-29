@@ -21,6 +21,21 @@ takes colour, sending events from a chosen level to standard error.
 ### Signatures
 
 ```pudu
+export type Options = {
+  outputTemplate: Str,
+  theme: Theme.Theme,
+  colored: Bool,
+  standardErrorFromLevel: Option[Log.Level],
+  formatter: Option[fn(&Log.Event) -> Str]
+}
+
+export fn defaults() -> Options
+
+export fn render(options: &Options, event: &Log.Event) -> Str
+
+export fn toErrors(options: &Options, level: Log.Level) -> Bool
+
+export fn sink(options: Options) -> Sink.Sink
 ```
 
 ### Linkage
@@ -59,4 +74,4 @@ DEPTH 0.6 (MEDIUM). Tested by `test/PuduLangLog/Sinks/ConsoleTest`.
 
 ## Referenced by
 
-(none)
+[[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Constants/Names]] · [[src/PuduLangLog/Domain/Output]] · [[src/PuduLangLog/Settings/Registry]] · [[src/PuduLangLog/Sinks/Theme]] · [[subsystems/Sinks]]

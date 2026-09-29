@@ -21,6 +21,29 @@ every event written meanwhile by loggers that enrich from it.
 ### Signatures
 
 ```pudu
+export type Context = { frames: Sync.Cell[Array[Enricher.Enricher]] }
+
+export type Bookmark = { frames: Array[Enricher.Enricher] }
+
+export fn create() -> Context
+
+export fn push(context: &Context, frame: Enricher.Enricher) -> Bookmark
+
+export fn pushProperty(context: &Context, name: Str, held: Log.Value) -> Bookmark
+
+export fn pushDestructured(context: &Context, name: Str, held: Log.Value) -> Bookmark
+
+export fn restore(context: &Context, bookmark: Bookmark) -> ()
+
+export fn using[T](context: &Context, name: Str, held: Log.Value, action: fn() -> T) -> T
+
+export fn clone(context: &Context) -> Context
+
+export fn suspend(context: &Context) -> Bookmark
+
+export fn reset(context: &Context) -> ()
+
+export fn enricher(context: &Context) -> Enricher.Enricher
 ```
 
 ### Linkage
@@ -58,4 +81,4 @@ DEPTH 0.6 (MEDIUM). Tested by `test/PuduLangLog/TopologyTest`.
 
 ## Referenced by
 
-(none)
+[[domain/Enrichment]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Enricher]] · [[subsystems/Pipeline]]

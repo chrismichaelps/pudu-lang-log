@@ -60,4 +60,4 @@ DEPTH 0.4 (SHALLOW). A leaf shared by the level and value renderers. Tested by
 
 ## Referenced by
 
-[[src/PuduLangLog/Domain/Display]] · [[src/PuduLangLog/Domain/Levels]] · [[src/PuduLangLog/Domain/Output]]
+[[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Domain/Display]] · [[src/PuduLangLog/Domain/Levels]] · [[src/PuduLangLog/Domain/Output]]

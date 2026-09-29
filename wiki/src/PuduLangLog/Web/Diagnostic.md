@@ -21,6 +21,21 @@ completion event, instead of writing events of its own.
 ### Signatures
 
 ```pudu
+export type Entry = { name: Str, value: Log.Value, destructure: Bool }
+
+export type Collector = { entries: Sync.Cell[Array[Entry]], failure: Sync.Cell[Option[Log.Failure]] }
+
+export fn create() -> Collector
+
+export fn set(collector: &Collector, name: Str, held: Log.Value) -> ()
+
+export fn setDestructured(collector: &Collector, name: Str, held: Log.Value) -> ()
+
+export fn setFailure(collector: &Collector, problem: Log.Failure) -> ()
+
+export fn entries(collector: &Collector) -> Array[Entry]
+
+export fn failure(collector: &Collector) -> Option[Log.Failure]
 ```
 
 ### Linkage
@@ -54,4 +69,4 @@ DEPTH 0.4 (SHALLOW). Tested by `test/PuduLangLog/Web/RequestLoggingTest`.
 
 ## Referenced by
 
-(none)
+[[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Web/Correlation]] · [[src/PuduLangLog/Web/RequestLogging]] · [[subsystems/Web]]

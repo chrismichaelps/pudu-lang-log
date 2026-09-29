@@ -95,4 +95,4 @@ DEPTH 0.8 (DEEP). Tested by `test/PuduLangLog/Domain/DisplayTest`.
 
 ## Referenced by
 
-[[src/PuduLangLog/Domain/Capture]] · [[src/PuduLangLog/Domain/Dates]] · [[src/PuduLangLog/Domain/Json]] · [[src/PuduLangLog/Domain/Numbers]] · [[src/PuduLangLog/Domain/Output]] · [[src/PuduLangLog/Domain/Padding]] · [[src/PuduLangLog/Domain/Properties]]
+[[domain/Event]] · [[domain/Formatting]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Domain/Capture]] · [[src/PuduLangLog/Domain/Clef]] · [[src/PuduLangLog/Domain/Dates]] · [[src/PuduLangLog/Domain/Json]] · [[src/PuduLangLog/Domain/Numbers]] · [[src/PuduLangLog/Domain/Output]] · [[src/PuduLangLog/Domain/Padding]] · [[src/PuduLangLog/Domain/Properties]] · [[src/PuduLangLog/Event]] · [[src/PuduLangLog/Expressions/Evaluator]] · [[src/PuduLangLog/Expressions/Template]] · [[src/PuduLangLog/Expressions/Values]] · [[src/PuduLangLog/Failure]] · [[src/PuduLangLog/Formatting/Compact]] · [[src/PuduLangLog/Formatting/Json]] · [[src/PuduLangLog/Formatting/Text]] · [[src/PuduLangLog/Sinks/Map]] · [[src/PuduLangLog/Sinks/Memory]] · [[src/PuduLangLog/Sinks/Theme]] · [[src/PuduLangLog/Value]] · [[subsystems/Formatting]]

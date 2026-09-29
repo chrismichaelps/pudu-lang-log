@@ -21,6 +21,31 @@ reach the sinks.
 ### Signatures
 
 ```pudu
+export type Predicate = fn(&Log.Event) -> Bool
+
+export type Filter = fn(&Log.Event) -> Bool
+
+export fn byExcluding(predicate: Predicate) -> Filter
+
+export fn byIncludingOnly(predicate: Predicate) -> Filter
+
+export fn fromSource(source: Str) -> Predicate
+
+export fn withProperty(name: Str) -> Predicate
+
+export fn withPropertyValue(name: Str, expected: Log.Value) -> Predicate
+
+export fn withPropertyWhere(name: Str, test: fn(&Log.Value) -> Bool) -> Predicate
+
+export fn atLeast(minimum: Log.Level) -> Predicate
+
+export fn withFailure() -> Predicate
+
+export fn allOf(predicates: Array[Predicate]) -> Predicate
+
+export fn anyOf(predicates: Array[Predicate]) -> Predicate
+
+export fn not(predicate: Predicate) -> Predicate
 ```
 
 ### Linkage
@@ -57,4 +82,4 @@ DEPTH 0.5 (MEDIUM). Tested by `test/PuduLangLog/TopologyTest`.
 
 ## Referenced by
 
-(none)
+[[domain/Filtering]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Configuration]] · [[src/PuduLangLog/Constants/Names]] · [[src/PuduLangLog/Domain/Sources]] · [[src/PuduLangLog/Pipeline]] · [[subsystems/Pipeline]]

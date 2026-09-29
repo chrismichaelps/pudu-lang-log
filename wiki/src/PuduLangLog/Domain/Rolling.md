@@ -93,4 +93,4 @@ DEPTH 0.8 (DEEP). Tested by `test/PuduLangLog/Domain/RollingTest`.
 
 ## Referenced by
 
-[[src/PuduLangLog/Domain/Dates]]
+[[domain/Rolling]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Domain/Dates]] · [[src/PuduLangLog/Sinks/File]]

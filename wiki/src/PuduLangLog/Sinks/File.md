@@ -22,6 +22,23 @@ flushed on demand or on a timer, and hooks when a file is opened or deleted.
 ### Signatures
 
 ```pudu
+export type Options = {
+  path: Str,
+  formatter: fn(&Log.Event) -> Str,
+  fileSizeLimitBytes: Option[Int],
+  rollingInterval: Log.RollingInterval,
+  rollOnFileSizeLimit: Bool,
+  retainedFileCountLimit: Option[Int],
+  retainedFileTimeLimit: Option[Int],
+  buffered: Bool,
+  flushInterval: Option[Int],
+  onOpened: Option[fn(Str) -> Option[Str]],
+  onDeleting: Option[fn(Str) -> ()]
+}
+
+export fn defaults(path: Str) -> Options
+
+export fn sink(options: Options) -> Sink.Sink
 ```
 
 ### Linkage
@@ -75,4 +92,4 @@ DEPTH 0.85 (DEEP). Tested by `test/PuduLangLog/Sinks/FileTest`.
 
 ## Referenced by
 
-(none)
+[[domain/Rolling]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Constants/Names]] · [[src/PuduLangLog/Domain/Rolling]] · [[src/PuduLangLog/Formatting/Text]] · [[src/PuduLangLog/Settings/Registry]] · [[subsystems/Sinks]]

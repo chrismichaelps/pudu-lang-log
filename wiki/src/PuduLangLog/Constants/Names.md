@@ -21,6 +21,11 @@ console and file sinks.
 ### Signatures
 
 ```pudu
+export const SOURCE_CONTEXT: Str = "SourceContext"
+
+export const CONSOLE_TEMPLATE: Str = "[\{Timestamp:HH:mm:ss\} \{Level:u3\}] \{Message:lj\}\{NewLine\}\{Exception\}"
+
+export const FILE_TEMPLATE: Str = "\{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz\} [\{Level:u3\}] \{Message:lj\}\{NewLine\}\{Exception\}"
 ```
 
 ### Linkage
@@ -52,4 +57,4 @@ DEPTH 0.2 (SHALLOW).
 
 ## Referenced by
 
-(none)
+[[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Bridge]] · [[src/PuduLangLog/Event]] · [[src/PuduLangLog/Filter]] · [[src/PuduLangLog/Logger]] · [[src/PuduLangLog/Sinks/Console]] · [[src/PuduLangLog/Sinks/File]]

@@ -20,6 +20,15 @@ The [[seams/Clock|clock seam]]: where every event's timestamp comes from, replac
 ### Signatures
 
 ```pudu
+export type Clock = fn() -> Log.Timestamp
+
+export fn system() -> Clock
+
+export fn utc() -> Clock
+
+export fn fixed(moment: Log.Timestamp) -> Clock
+
+export fn stepping(start: Log.Timestamp, step: Int) -> Clock
 ```
 
 ### Linkage
@@ -53,4 +62,4 @@ DEPTH 0.4 (SHALLOW). Tested by `test/PuduLangLog/ValueTest`.
 
 ## Referenced by
 
-(none)
+[[seams/Clock]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Configuration]] · [[src/PuduLangLog/Expressions]] · [[src/PuduLangLog/Pipeline]]

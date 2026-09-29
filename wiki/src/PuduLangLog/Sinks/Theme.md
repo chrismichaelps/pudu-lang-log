@@ -22,6 +22,36 @@ pieces.
 ### Signatures
 
 ```pudu
+export type Theme = {
+  text: Str,
+  secondary: Str,
+  tertiary: Str,
+  invalid: Str,
+  nullValue: Str,
+  name: Str,
+  string: Str,
+  number: Str,
+  boolean: Str,
+  scalar: Str,
+  verbose: Str,
+  debug: Str,
+  information: Str,
+  warning: Str,
+  error: Str,
+  fatal: Str
+}
+
+export fn none() -> Theme
+
+export fn literate() -> Theme
+
+export fn grayscale() -> Theme
+
+export fn code() -> Theme
+
+export fn sixteen() -> Theme
+
+export fn paint(theme: &Theme, pieces: &Array[Display.Piece]) -> Str
 ```
 
 ### Linkage
@@ -56,4 +86,4 @@ DEPTH 0.4 (SHALLOW). Tested by `test/PuduLangLog/Sinks/ConsoleTest`.
 
 ## Referenced by
 
-(none)
+[[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Settings/Registry]] · [[src/PuduLangLog/Sinks/Console]] · [[subsystems/Sinks]]

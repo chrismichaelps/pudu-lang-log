@@ -21,6 +21,19 @@ arguments, an invalid property name — without ever failing the program's own l
 ### Signatures
 
 ```pudu
+export type SelfLog = { writer: Sync.Cell[Option[fn(Str) -> ()]] }
+
+export fn create() -> SelfLog
+
+export fn toErrorStream() -> SelfLog
+
+export fn enable(log: &SelfLog, writer: fn(Str) -> ()) -> ()
+
+export fn disable(log: &SelfLog) -> ()
+
+export fn isEnabled(log: &SelfLog) -> Bool
+
+export fn write(log: &SelfLog, message: Str) -> ()
 ```
 
 ### Linkage
@@ -55,4 +68,4 @@ DEPTH 0.4 (SHALLOW). Tested by `test/PuduLangLog/LoggerTest`.
 
 ## Referenced by
 
-(none)
+[[decisions/ADR-0001-logging-never-fails-the-caller]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Configuration]] · [[src/PuduLangLog/Logger]] · [[src/PuduLangLog/Pipeline]] · [[src/PuduLangLog/Sink]] · [[src/PuduLangLog/Sinks/Async]] · [[src/PuduLangLog/Sinks/Batching]]

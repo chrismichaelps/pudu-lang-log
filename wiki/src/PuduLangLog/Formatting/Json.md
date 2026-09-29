@@ -21,6 +21,11 @@ destinations that read events back as documents.
 ### Signatures
 
 ```pudu
+export type Options = { renderMessage: Bool, closingDelimiter: Str }
+
+export fn defaults() -> Options
+
+export fn formatter(options: Options) -> Log.Formatter
 ```
 
 ### Linkage
@@ -60,4 +65,4 @@ DEPTH 0.6 (MEDIUM). Tested by `test/PuduLangLog/Formatting/FormattingTest`.
 
 ## Referenced by
 
-(none)
+[[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Settings/Registry]] · [[subsystems/Formatting]]

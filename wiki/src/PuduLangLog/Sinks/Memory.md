@@ -20,6 +20,25 @@ Keeps events in memory, for tests of code that logs and for in-process views of 
 ### Signatures
 
 ```pudu
+export type Memory = { events: Sync.Cell[Array[Log.Event]], lock: Sync.Mutex, capacity: Int }
+
+export fn create() -> Memory
+
+export fn bounded(capacity: Int) -> Memory
+
+export fn sink(memory: &Memory) -> Sink.Sink
+
+export fn events(memory: &Memory) -> Array[Log.Event]
+
+export fn messages(memory: &Memory) -> Array[Str]
+
+export fn matching(memory: &Memory, predicate: fn(&Log.Event) -> Bool) -> Array[Log.Event]
+
+export fn withTemplate(memory: &Memory, template: Str) -> Array[Log.Event]
+
+export fn latest(memory: &Memory) -> Option[Log.Event]
+
+export fn clear(memory: &Memory) -> ()
 ```
 
 ### Linkage
@@ -54,4 +73,4 @@ DEPTH 0.5 (MEDIUM). Tested by `test/PuduLangLog/Sinks/MemoryTest`.
 
 ## Referenced by
 
-(none)
+[[seams/Sink]] · [[src/PuduLangLog/_MOC]] · [[subsystems/Sinks]]

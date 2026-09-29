@@ -72,4 +72,4 @@ DEPTH 0.7 (DEEP). Tested by `test/PuduLangLog/Domain/RollingTest`.
 
 ## Referenced by
 
-(none)
+[[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Sinks/Batching]]

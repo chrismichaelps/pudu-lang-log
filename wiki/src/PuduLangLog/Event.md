@@ -21,6 +21,23 @@ tests.
 ### Signatures
 
 ```pudu
+export fn create(timestamp: Log.Timestamp, level: Log.Level, template: Str, properties: Array[Log.Property]) -> Log.Event
+
+export fn message(event: &Log.Event) -> Str
+
+export fn property(event: &Log.Event, name: Str) -> Option[Log.Value]
+
+export fn sourceContext(event: &Log.Event) -> Option[Str]
+
+export fn withProperty(event: &Log.Event, name: Str, held: Log.Value) -> Log.Event
+
+export fn withPropertyIfAbsent(event: &Log.Event, name: Str, held: Log.Value) -> Log.Event
+
+export fn withoutProperty(event: &Log.Event, name: Str) -> Log.Event
+
+export fn withFailure(event: &Log.Event, problem: Log.Failure) -> Log.Event
+
+export fn withTrace(event: &Log.Event, traceId: Str, spanId: Str) -> Log.Event
 ```
 
 ### Linkage
@@ -57,4 +74,4 @@ DEPTH 0.5 (MEDIUM). Tested by `test/PuduLangLog/LoggerTest` and `test/PuduLangLo
 
 ## Referenced by
 
-(none)
+[[domain/Event]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Constants/Names]] · [[src/PuduLangLog/Domain/Display]] · [[src/PuduLangLog/Domain/Properties]]

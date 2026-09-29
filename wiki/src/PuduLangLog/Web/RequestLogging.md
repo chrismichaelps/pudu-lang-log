@@ -22,6 +22,27 @@ properties a handler collected and the trace of a `traceparent` header.
 ### Signatures
 
 ```pudu
+export type Options = {
+  messageTemplate: Str,
+  level: fn(&Route.Request, Int, Float64, Bool) -> Log.Level,
+  enrich: fn(&Diagnostic.Collector, &Route.Request, &Web.Response) -> (),
+  includeQueryInRequestPath: Bool,
+  properties: fn(&Route.Request, Str, Float64, Int) -> Array[Log.Property]
+}
+
+export const SOURCE: Str = "PuduLangLog.Web.RequestLogging"
+
+export const MESSAGE: Str = "HTTP \{RequestMethod\} \{RequestPath\} responded \{StatusCode\} in \{Elapsed:0.0000\} ms"
+
+export fn defaults() -> Options
+
+export fn levelFor(status: Int, failed: Bool) -> Log.Level
+
+export fn standardProperties(request: &Route.Request, path: Str, elapsed: Float64, status: Int) -> Array[Log.Property]
+
+export fn middleware(logger: &Logger.Logger, options: Options) -> Route.Middleware
+
+export fn handler(logger: &Logger.Logger, options: Options, inner: fn(Route.Request, &Diagnostic.Collector) -> Web.Response) -> Route.Handler
 ```
 
 ### Linkage
@@ -67,4 +88,4 @@ DEPTH 0.7 (DEEP). Tested by `test/PuduLangLog/Web/RequestLoggingTest`.
 
 ## Referenced by
 
-(none)
+[[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Web/Correlation]] · [[src/PuduLangLog/Web/Diagnostic]] · [[subsystems/Web]]

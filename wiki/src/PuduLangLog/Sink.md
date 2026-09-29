@@ -22,6 +22,40 @@ fallible sinks with listeners; and fallback chains.
 ### Signatures
 
 ```pudu
+export type FailureKind = Temporary | Permanent | Final
+
+export type Report = { kind: FailureKind, message: Str, events: Array[Log.Event] }
+
+export type Listener = fn(&Report) -> ()
+
+export type Sink = {
+  emit: fn(&Log.Event) -> Result[(), Str],
+  flush: fn() -> (),
+  close: fn() -> (),
+  attach: fn(Listener) -> ()
+}
+
+export fn of(emit: fn(&Log.Event) -> Result[(), Str]) -> Sink
+
+export fn lines(formatter: Log.Formatter, write: fn(Str) -> Result[(), Str]) -> Sink
+
+export fn none() -> Sink
+
+export fn restricted(sink: Sink, minimum: Log.Level) -> Sink
+
+export fn controlled(sink: Sink, control: &LevelSwitch.LevelSwitch) -> Sink
+
+export fn conditional(sink: Sink, condition: fn(&Log.Event) -> Bool) -> Sink
+
+export fn aggregate(sinks: Array[Sink], log: &SelfLog.SelfLog) -> Sink
+
+export fn audited(sinks: Array[Sink]) -> Sink
+
+export fn fallible(sink: Sink, listener: Listener) -> Sink
+
+export fn fallbackChain(sinks: Array[Sink]) -> Sink
+
+export fn reportTo(log: &SelfLog.SelfLog) -> Listener
 ```
 
 ### Linkage
@@ -29,7 +63,7 @@ fallible sinks with listeners; and fallback chains.
 - **Requires:** [[src/PuduLangLog]], [[src/PuduLangLog/Domain/Levels]],
   [[src/PuduLangLog/LevelSwitch]], [[src/PuduLangLog/SelfLog]], `Std.List`.
 - **Consumed by:** [[src/PuduLangLog/Configuration]], [[src/PuduLangLog/Logger]],
-  [[src/PuduLangLog/Pipeline]], and every module under [[src/PuduLangLog/Sinks/_MOC]].
+  [[src/PuduLangLog/Pipeline]], and every module under [[subsystems/Sinks]].
 
 ## Algorithm
 
@@ -67,4 +101,4 @@ DEPTH 0.8 (DEEP). Tested by `test/PuduLangLog/TopologyTest`.
 
 ## Referenced by
 
-(none)
+[[decisions/ADR-0001-logging-never-fails-the-caller]] · [[seams/Sink]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Configuration]] · [[src/PuduLangLog/LevelSwitch]] · [[src/PuduLangLog/Logger]] · [[src/PuduLangLog/Pipeline]] · [[src/PuduLangLog/SelfLog]] · [[src/PuduLangLog/Settings]] · [[src/PuduLangLog/Settings/Registry]] · [[src/PuduLangLog/Sinks/Async]] · [[src/PuduLangLog/Sinks/Batching]] · [[src/PuduLangLog/Sinks/Console]] · [[src/PuduLangLog/Sinks/File]] · [[src/PuduLangLog/Sinks/Http]] · [[src/PuduLangLog/Sinks/Map]] · [[src/PuduLangLog/Sinks/Memory]] · [[src/PuduLangLog/Sinks/Observable]] · [[subsystems/Sinks]]

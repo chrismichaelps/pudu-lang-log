@@ -90,4 +90,4 @@ DEPTH 0.85 (DEEP). A one-function interface over the whole template grammar. Tes
 
 ## Referenced by
 
-(none)
+[[CHANGELOG]] · [[domain/Template]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Bridge]] · [[src/PuduLangLog/Domain/Clef]] · [[src/PuduLangLog/Event]] · [[src/PuduLangLog/Formatting/Text]] · [[src/PuduLangLog/Logger]] · [[src/PuduLangLog/Pipeline]] · [[src/PuduLangLog/Sinks/Console]] · [[src/PuduLangLog/Web/RequestLogging]]

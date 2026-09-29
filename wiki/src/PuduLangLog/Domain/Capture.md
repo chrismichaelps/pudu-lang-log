@@ -114,4 +114,4 @@ DEPTH 0.85 (DEEP). Tested by `test/PuduLangLog/Domain/CaptureTest`.
 
 ## Referenced by
 
-[[src/PuduLangLog/Domain/Parser]] · [[src/PuduLangLog/Domain/Properties]]
+[[CHANGELOG]] · [[decisions/ADR-0003-capture-at-write]] · [[domain/Template]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Configuration]] · [[src/PuduLangLog/Context]] · [[src/PuduLangLog/Domain/Parser]] · [[src/PuduLangLog/Domain/Properties]] · [[src/PuduLangLog/Enricher]] · [[src/PuduLangLog/Expressions]] · [[src/PuduLangLog/Logger]] · [[src/PuduLangLog/Pipeline]]

@@ -24,8 +24,6 @@ filters.
 export fn covers(prefix: Str, source: Str) -> Bool
 
 export fn beneath(prefix: Str, source: Str) -> Bool
-
-export fn before(left: Str, right: Str) -> Bool
 ```
 
 ### Linkage
@@ -61,4 +59,4 @@ DEPTH 0.5 (MEDIUM). Tested by `test/PuduLangLog/Domain/RollingTest`.
 
 ## Referenced by
 
-(none)
+[[domain/Level]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Filter]] · [[src/PuduLangLog/Pipeline]]

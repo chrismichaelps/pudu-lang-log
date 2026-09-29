@@ -72,4 +72,4 @@ DEPTH 0.75 (DEEP). Tested by `test/PuduLangLog/Domain/OutputTest`.
 
 ## Referenced by
 
-[[src/PuduLangLog/Domain/Display]]
+[[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Domain/Display]] · [[src/PuduLangLog/Formatting/Text]] · [[src/PuduLangLog/Sinks/Console]] · [[subsystems/Formatting]]

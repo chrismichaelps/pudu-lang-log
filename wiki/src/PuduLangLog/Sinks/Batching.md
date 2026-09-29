@@ -22,6 +22,20 @@ retries failed batches on a growing [[src/PuduLangLog/Domain/Schedule|schedule]]
 ### Signatures
 
 ```pudu
+export type Options = {
+  batchSizeLimit: Int,
+  bufferingTimeLimit: Int,
+  eagerlyEmitFirstEvent: Bool,
+  queueLimit: Option[Int],
+  retryTimeLimit: Int,
+  selfLog: SelfLog.SelfLog
+}
+
+export type Target = { emitBatch: fn(&Array[Log.Event]) -> Result[(), Str], onEmptyBatch: fn() -> () }
+
+export fn defaults() -> Options
+
+export fn sink(target: Target, options: Options) -> Sink.Sink
 ```
 
 ### Linkage
@@ -69,4 +83,4 @@ DEPTH 0.8 (DEEP). Tested by `test/PuduLangLog/Sinks/BatchingTest`.
 
 ## Referenced by
 
-(none)
+[[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Domain/Schedule]] · [[src/PuduLangLog/Settings/Registry]] · [[src/PuduLangLog/Sinks/Http]] · [[subsystems/Sinks]]

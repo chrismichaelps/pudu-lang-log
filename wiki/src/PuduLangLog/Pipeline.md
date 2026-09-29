@@ -22,6 +22,36 @@ emission to the joined sinks and audit sinks.
 ### Signatures
 
 ```pudu
+export type Pipeline = {
+  minimum: Log.Level,
+  control: Option[LevelSwitch.LevelSwitch],
+  overrides: Array[Override],
+  enrichers: Array[Enricher.Enricher],
+  filters: Array[Filter.Filter],
+  sink: Sink.Sink,
+  audit: Option[Sink.Sink],
+  policy: Capture.Policy,
+  selfLog: SelfLog.SelfLog,
+  clock: Clock.Clock,
+  templates: Templates,
+  silent: Bool
+}
+
+export type Override = { source: Str, control: LevelSwitch.LevelSwitch }
+
+export type Templates = { entries: Sync.Cell[Map[Str, Log.Template]], lock: Sync.Mutex }
+
+export fn templates() -> Templates
+
+export fn silent() -> Pipeline
+
+export fn templateOf(pipeline: &Pipeline, text: Str) -> Log.Template
+
+export fn enabled(pipeline: &Pipeline, source: &Option[Str], level: Log.Level) -> Bool
+
+export fn process(pipeline: &Pipeline, event: Log.Event, context: &Array[Enricher.Enricher]) -> Result[(), Str]
+
+export fn report(pipeline: &Pipeline, problems: &Array[Str]) -> ()
 ```
 
 ### Linkage
@@ -69,4 +99,4 @@ DEPTH 0.8 (DEEP). Tested by `test/PuduLangLog/LoggerTest` and `test/PuduLangLog/
 
 ## Referenced by
 
-(none)
+[[architecture/_MOC]] · [[CHANGELOG]] · [[domain/Pipeline]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Bridge]] · [[src/PuduLangLog/Clock]] · [[src/PuduLangLog/Configuration]] · [[src/PuduLangLog/Domain/Sources]] · [[src/PuduLangLog/Enricher]] · [[src/PuduLangLog/Filter]] · [[src/PuduLangLog/LevelSwitch]] · [[src/PuduLangLog/Logger]] · [[src/PuduLangLog/SelfLog]] · [[src/PuduLangLog/Sink]] · [[subsystems/Pipeline]]

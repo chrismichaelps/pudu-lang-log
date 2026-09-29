@@ -69,4 +69,4 @@ DEPTH 0.7 (DEEP). Tested by `test/PuduLangLog/Domain/JsonTest`.
 
 ## Referenced by
 
-[[src/PuduLangLog/Domain/Capture]] · [[src/PuduLangLog/Domain/Dates]] · [[src/PuduLangLog/Domain/Display]] · [[src/PuduLangLog/Domain/Numbers]]
+[[domain/Formatting]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Domain/Capture]] · [[src/PuduLangLog/Domain/Dates]] · [[src/PuduLangLog/Domain/Display]] · [[src/PuduLangLog/Domain/Numbers]] · [[src/PuduLangLog/Expressions/Template]] · [[src/PuduLangLog/Formatting/Compact]] · [[src/PuduLangLog/Formatting/Json]] · [[src/PuduLangLog/Value]] · [[src/PuduLangLog/Web/Correlation]] · [[subsystems/Formatting]]
