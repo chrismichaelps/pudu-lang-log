@@ -1,0 +1,50 @@
+/** @Example.Settings.Program — a logger configured from JSON settings */
+module Settings
+
+import Std.Io as Io
+import PuduLangLog.Configuration as Configuration
+import PuduLangLog.LevelSwitch as LevelSwitch
+import PuduLangLog as Log
+import PuduLangLog.Logger as Logger
+import PuduLangLog.Settings.Registry as Registry
+import PuduLangLog.Settings as Settings
+import PuduLangLog.Value as Value
+
+/// The settings an application would keep in its configuration file, one line each.
+const DOCUMENT: Array[Str] = [
+  "\{\"Log\": \{",
+  "  \"MinimumLevel\": \{\"Default\": \"Debug\", \"Override\": \{\"Settings.Http\": \"Warning\"\}\},",
+  "  \"LevelSwitches\": \{\"$console\": \"Information\"\},",
+  "  \"Properties\": \{\"Application\": \"Settings example\"\},",
+  "  \"Enrich\": [\"MachineName\"],",
+  "  \"Filter\": [\{\"ByExcluding\": \"RequestPath like '/health%'\"\}],",
+  "  \"WriteTo\": [\{\"Name\": \"Console\", \"Args\": \{\"theme\": \"none\", \"levelSwitch\": \"$console\", \"outputTemplate\": \"[\{Level:u3\}] \{Message:lj\} (\{Application\})\{NewLine\}\"\}\}]",
+  "\}\}"
+]
+
+/// Loads the settings, writes a few events, lowers the console's level, and answers 0.
+fn main() -> Int {
+  let pairs = match Settings.fromJson(DOCUMENT.join("\n"), "Log") {
+    case Ok(found) => found
+    case Err(problem) => {
+      let _said = Io.writeErrorLine(problem)
+      return 1
+    }
+  }
+  let loaded = match Settings.apply(&Configuration.create(), &pairs.concat(Settings.fromEnvironment("SETTINGS_EXAMPLE")), &Registry.standard()) {
+    case Ok(found) => found
+    case Err(problems) => {
+      for problem in problems { let _said = Io.writeErrorLine(problem) }
+      return 1
+    }
+  }
+  let logger = loaded.configuration.createLogger()
+  logger.information("Started with \{Count\} settings", [Value.int(pairs.length())])
+  logger.debug("Hidden until the console switch is lowered", [])
+  logger.forSource("Settings.Http").information("Hidden by the override", [])
+  logger.information("Served \{RequestPath\}", [Value.text("/health/live")])
+  if let Some(console) = Settings.switchNamed(&loaded, "$console") { LevelSwitch.set(&console, Log.Debug) }
+  logger.debug("Visible after lowering the console switch", [])
+  Logger.close(&logger)
+  0
+}

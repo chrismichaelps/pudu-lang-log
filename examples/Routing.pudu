@@ -1,0 +1,37 @@
+/** @Example.Routing.Program — one sink per tenant and a live observer */
+module Routing
+
+import Std.Io as Io
+import PuduLangLog.Configuration as Configuration
+import PuduLangLog as Log
+import PuduLangLog.Logger as Logger
+import PuduLangLog.Sink as Sink
+import PuduLangLog.Sinks.Map as Map
+import PuduLangLog.Sinks.Memory as Memory
+import PuduLangLog.Sinks.Observable as Observable
+import PuduLangLog.Value as Value
+
+/// Routes events by tenant, keeps at most two tenant sinks open, watches warnings, and answers 0.
+fn main() -> Int {
+  let store = Memory.create()
+  let perTenant = Map.sink(Map.Options {
+      ..Map.defaults(Map.byProperty("Tenant", "none"), fn(tenant: Str) -> Sink.Sink {
+          let _opened = Io.writeLine("opened a sink for " + tenant)
+          Memory.sink(&store)
+        }),
+      limit: Some(2)
+    })
+  let watched = Observable.create()
+  let _subscription = Observable.subscribe(&watched, Observable.Observer {
+      next: fn(event: &Log.Event) -> () { if event.level == Log.Warning { let _seen = Io.writeLine("observed a warning: " + event.template.text) } },
+      completed: fn() -> () { let _done = Io.writeLine("observer finished") }
+    })
+  let logger = Configuration.create().writeTo(perTenant).writeTo(Observable.sink(&watched)).createLogger()
+  for tenant in ["north", "south", "north", "east", "south"] {
+    logger.forContext("Tenant", Value.text(tenant)).information("Request for \{Tenant\}", [])
+  }
+  logger.warning("Disk almost full", [])
+  Logger.close(&logger)
+  let _counted = Io.writeLine(show(Memory.events(&store).length()) + " events stored")
+  0
+}
