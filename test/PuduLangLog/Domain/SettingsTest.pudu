@@ -61,6 +61,7 @@ fn main() -> Int {
             ("MinimumLevel:Override", "Debug"),
             ("MinimumLevel:Override:App", "Loud"),
             ("MinimumLevel:Other", "x"),
+            ("MinimumLevel:Default:Extra", "Debug"),
             ("LevelSwitches:$a", "Loud"),
             ("LevelSwitches", "Debug"),
             ("Properties", "x"),
@@ -74,12 +75,15 @@ fn main() -> Int {
             ("Destructure:MaximumDepth", "deep"),
             ("Destructure:Other", "1"),
             ("Destructure", "1"),
+            ("Destructure:Other:x", "1"),
+            ("Destructure:AsScalar", "Money"),
             ("Using:0", "Something")
           ]), &[
           "Unknown or malformed setting `MinimumLevel`",
           "Unknown or malformed setting `MinimumLevel:Override`",
           "Unknown or malformed setting `MinimumLevel:Override:App`",
           "Unknown or malformed setting `MinimumLevel:Other`",
+          "Unknown or malformed setting `MinimumLevel:Default:Extra`",
           "Unknown or malformed setting `LevelSwitches:$a`",
           "Unknown or malformed setting `LevelSwitches`",
           "Unknown or malformed setting `Properties`",
@@ -93,6 +97,8 @@ fn main() -> Int {
           "Unknown or malformed setting `Destructure:MaximumDepth`",
           "Unknown or malformed setting `Destructure:Other`",
           "Unknown or malformed setting `Destructure`",
+          "Unknown or malformed setting `Destructure:Other:x`",
+          "Unknown or malformed setting `Destructure:AsScalar`",
           "Unknown or malformed setting `Using:0`"
         ]),
       Test.equals("references to undeclared switches and unnamed entries", &problemsOf([
@@ -110,6 +116,7 @@ fn main() -> Int {
           "The level switch `third` is not declared"
         ]),
       Test.equals("JSON under a section", &Settings.fromJson("\{\"Other\":1,\"log\":\{\"MinimumLevel\":\{\"Default\":\"Debug\"\},\"WriteTo\":[\{\"Name\":\"Console\",\"Args\":\{\"buffered\":true,\"limit\":5,\"ratio\":0.5,\"none\":null\}\}]\}\}", "Log"), &Ok([("MinimumLevel:Default", "Debug"), ("WriteTo:0:Name", "Console"), ("WriteTo:0:Args:buffered", "true"), ("WriteTo:0:Args:limit", "5"), ("WriteTo:0:Args:ratio", "0.5"), ("WriteTo:0:Args:none", "")])),
+      Test.equals("JSON lists are numbered from zero", &Settings.fromJson("\{\"Enrich\":[\"A\",\"B\",\"C\"]\}", ""), &Ok([("Enrich:0", "A"), ("Enrich:1", "B"), ("Enrich:2", "C")])),
       Test.equals("JSON without a section, or missing it", &(Settings.fromJson("\{\"Properties\":\{\"A\":false\}\}", ""), Settings.fromJson("\{\"A\":1\}", "Log"), Settings.fromJson("[1]", "Log")), &(Ok([("Properties:A", "false")]), Ok([]), Ok([]))),
       Test.that("text that is not JSON is refused", Result.isErr(&Settings.fromJson("\{", "Log"))),
       Test.equals("environment variable names", &[Settings.environmentKey("APP__MinimumLevel__Default", "APP"), Settings.environmentKey("app__WriteTo__0__Name", "App"), Settings.environmentKey("APP__", "APP"), Settings.environmentKey("OTHER__X", "APP"), Settings.environmentKey("APPX__Y", "APP")], &[Some("MinimumLevel:Default"), Some("WriteTo:0:Name"), None, None, None]),

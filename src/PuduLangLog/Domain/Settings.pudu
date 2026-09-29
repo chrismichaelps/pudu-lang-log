@@ -120,7 +120,7 @@ fn minimumLevel(state: &State, key: Str, rest: &Array[Str], value: Str) -> State
     return State{..*state, plan: Plan{..plan, minimum: Some(level)}}
   }
   if rest.length() == 1 && first == "controlledby" { return State{..*state, plan: Plan{..plan, controlledBy: Some(switchName(value))}} }
-  if rest.length() > 1 && first == "override" {
+  if first == "override" {
     let source = List.drop(rest, 1).join(":")
     let chosen = value.trim()
     if source.isEmpty() || (!chosen.startsWith(SWITCH_MARK) && levelOf(chosen) == None) { return refused(state, key) }
