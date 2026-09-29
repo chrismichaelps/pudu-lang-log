@@ -2,6 +2,8 @@
 module PuduLangLog.Enrichers.Environment
 
 import Std.Env as Env
+import Std.List as List
+import Std.Option as Option
 import Std.Process as Process
 import Std.Result as Result
 import PuduLangLog.Enricher as Enricher
@@ -49,6 +51,22 @@ export fn processId() -> Enricher.Enricher {
     case None => Log.Scalar(Log.Null)
   }
   Enricher.property("ProcessId", held)
+}
+
+/// Adds `ProcessName`, the command name of the running program, read once.
+export fn processName() -> Enricher.Enricher {
+  let answer = Result.unwrapOr(Process.output("sh", &["-c", "ps -o comm= -p $PPID"]), "").trim()
+  let name = Option.unwrapOr(List.last(&answer.split("/")), answer)
+  Enricher.property("ProcessName", if name.isEmpty() { Log.Scalar(Log.Null) } else { Log.Scalar(Log.Text(name)) })
+}
+
+/// Adds a property named after an environment variable holding its value, read once; an unset
+/// variable adds nothing.
+export fn environmentVariable(variable: Str) -> Enricher.Enricher {
+  match Env.variable(variable) {
+    case Some(found) => Enricher.property(variable, Log.Scalar(Log.Text(found)))
+    case None => Enricher.all([])
+  }
 }
 
 /// Adds `FailureDetail`, a structure of the event's failure — `Kind`, `Message`, `Trace`, and

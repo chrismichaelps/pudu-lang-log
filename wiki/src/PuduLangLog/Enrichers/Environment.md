@@ -22,6 +22,21 @@ data.
 ### Signatures
 
 ```pudu
+export const ENVIRONMENT_VARIABLE: Str = "PUDU_ENVIRONMENT"
+
+export fn machineName() -> Enricher.Enricher
+
+export fn environmentUserName() -> Enricher.Enricher
+
+export fn environmentName(variable: Str) -> Enricher.Enricher
+
+export fn processId() -> Enricher.Enricher
+
+export fn processName() -> Enricher.Enricher
+
+export fn environmentVariable(variable: Str) -> Enricher.Enricher
+
+export fn failureDetail() -> Enricher.Enricher
 ```
 
 ### Linkage
@@ -63,4 +78,4 @@ DEPTH 0.5 (MEDIUM). Tested by `test/PuduLangLog/Enrichers/EnvironmentTest`.
 
 ## Referenced by
 
-(none)
+[[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Settings/Registry]] · [[subsystems/Pipeline]]

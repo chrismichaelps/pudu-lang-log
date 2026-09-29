@@ -4,6 +4,7 @@ module PuduLangLog.Configuration
 import Std.List as List
 import PuduLangLog.Clock as Clock
 import PuduLangLog.Domain.Capture as Capture
+import PuduLangLog.Domain.Masking as Masking
 import PuduLangLog.Enricher as Enricher
 import PuduLangLog.Filter as Filter
 import PuduLangLog.LevelSwitch as LevelSwitch
@@ -90,6 +91,8 @@ export trait Configuring {
   fn destructureByTransforming(self: &Self, tag: Str, transform: fn(Log.Value) -> Log.Value) -> Self
   fn destructureAsScalar(self: &Self, tag: Str) -> Self
   fn destructureWithRule(self: &Self, rule: fn(&Log.Value) -> Option[Log.Value]) -> Self
+  fn destructureByIgnoring(self: &Self, tag: Str, names: Array[Str]) -> Self
+  fn destructureByMasking(self: &Self, tag: Str, names: Array[Str], mask: Str) -> Self
   fn maximumDepth(self: &Self, depth: Int) -> Self
   fn maximumStringLength(self: &Self, length: Int) -> Self
   fn maximumCollectionCount(self: &Self, count: Int) -> Self
@@ -174,6 +177,17 @@ impl Configuring for Configuration {
   /// Adds a rule that may replace any destructured structure; the first rule answering wins.
   fn destructureWithRule(self: &Self, rule: fn(&Log.Value) -> Option[Log.Value]) -> Self {
     Configuration{..*self, policy: Capture.Policy{..self.policy, custom: self.policy.custom.push(rule)}}
+  }
+
+  /// Leaves the listed members out of destructured structures of a tag; names compare ignoring case.
+  fn destructureByIgnoring(self: &Self, tag: Str, names: Array[Str]) -> Self {
+    self.destructureWithRule(fn(held: &Log.Value) -> Option[Log.Value] { Masking.ignoring(held, tag, &names) })
+  }
+
+  /// Replaces the listed members of destructured structures of a tag with the mask text; names
+  /// compare ignoring case.
+  fn destructureByMasking(self: &Self, tag: Str, names: Array[Str], mask: Str) -> Self {
+    self.destructureWithRule(fn(held: &Log.Value) -> Option[Log.Value] { Masking.masking(held, tag, &names, mask) })
   }
 
   /// Captures at most `depth` levels of nesting.

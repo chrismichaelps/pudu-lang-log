@@ -15,7 +15,7 @@ import PuduLangLog.Value as Value
 /// Runs the suite.
 fn main() -> Int {
   let memory = Memory.create()
-  let logger = Configuration.create().writeTo(Memory.sink(&memory)).enrichWith(Environment.machineName()).enrichWith(Environment.environmentUserName()).enrichWith(Environment.environmentName("PUDU_LANG_LOG_UNSET_VARIABLE")).enrichWith(Environment.environmentName("HOME")).enrichWith(Environment.processId()).enrichWith(Environment.failureDetail()).createLogger()
+  let logger = Configuration.create().writeTo(Memory.sink(&memory)).enrichWith(Environment.machineName()).enrichWith(Environment.environmentUserName()).enrichWith(Environment.environmentName("PUDU_LANG_LOG_UNSET_VARIABLE")).enrichWith(Environment.environmentName("HOME")).enrichWith(Environment.processId()).enrichWith(Environment.processName()).enrichWith(Environment.environmentVariable("HOME")).enrichWith(Environment.environmentVariable("PUDU_LANG_LOG_UNSET_VARIABLE")).enrichWith(Environment.failureDetail()).createLogger()
   logger.writeFailure(Log.Error, Failure.causedBy(&Failure.withTrace(&Failure.of("IoError", "full"), ["Disk.write"]), Failure.of("Quota", "exceeded")), "failed", [])
   logger.information("fine", [])
   let failed = Memory.events(&memory)[0]
@@ -34,6 +34,15 @@ fn main() -> Int {
           case Some(Log.Scalar(Log.Integer(number))) => number > 0
           case _ => false
         }),
+      Test.that("the process has a name", match Event.property(&failed, "ProcessName") {
+          case Some(Log.Scalar(Log.Text(name))) => !name.isEmpty() && !name.contains("/")
+          case _ => false
+        }),
+      Test.that("a set variable becomes a property of its name", match Event.property(&failed, "HOME") {
+          case Some(Log.Scalar(Log.Text(home))) => !home.isEmpty()
+          case _ => false
+        }),
+      Test.equals("an unset variable adds nothing", &Event.property(&failed, "PUDU_LANG_LOG_UNSET_VARIABLE"), &None),
       Test.equals("failure details as a structure", &Event.property(&failed, "FailureDetail"), &Some(Value.structure("IoError", [("Kind", Value.text("IoError")), ("Message", Value.text("full")), ("Trace", Value.list([Value.text("Disk.write")])), ("Causes", Value.list([Value.structure("Quota", [("Kind", Value.text("Quota")), ("Message", Value.text("exceeded")), ("Trace", Value.list([])), ("Causes", Value.list([]))])]))]))),
       Test.equals("no failure means null detail", &Event.property(&fine, "FailureDetail"), &Some(Value.nothing()))
     ])

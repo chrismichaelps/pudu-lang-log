@@ -22,6 +22,56 @@ clock — and creates the logger.
 ### Signatures
 
 ```pudu
+export type Configuration = {
+  minimum: Log.Level,
+  control: Option[LevelSwitch.LevelSwitch],
+  overrides: Array[Pipeline.Override],
+  enrichers: Array[Enricher.Enricher],
+  filters: Array[Filter.Filter],
+  sinks: Array[Sink.Sink],
+  audits: Array[Sink.Sink],
+  policy: Capture.Policy,
+  selfLog: SelfLog.SelfLog,
+  clock: Clock.Clock
+}
+
+export fn create() -> Configuration
+
+export fn nested() -> Configuration
+
+export fn pipelineOf(configuration: &Configuration) -> Pipeline.Pipeline
+
+export trait Configuring {
+  fn createLogger(self: &Self) -> Logger.Logger
+  fn createReloadableLogger(self: &Self) -> Logger.Logger
+  fn minimumLevel(self: &Self, level: Log.Level) -> Self
+  fn controlledBy(self: &Self, control: &LevelSwitch.LevelSwitch) -> Self
+  fn overrideLevel(self: &Self, source: Str, level: Log.Level) -> Self
+  fn overrideSwitch(self: &Self, source: Str, control: &LevelSwitch.LevelSwitch) -> Self
+  fn writeTo(self: &Self, sink: Sink.Sink) -> Self
+  fn writeToAtLeast(self: &Self, sink: Sink.Sink, minimum: Log.Level) -> Self
+  fn writeToControlled(self: &Self, sink: Sink.Sink, control: &LevelSwitch.LevelSwitch) -> Self
+  fn writeToWhen(self: &Self, condition: fn(&Log.Event) -> Bool, sink: Sink.Sink) -> Self
+  fn writeToLogger(self: &Self, logger: &Logger.Logger) -> Self
+  fn writeToFallible(self: &Self, sink: Sink.Sink, listener: fn(&Sink.Report) -> ()) -> Self
+  fn writeToFallbackChain(self: &Self, sinks: Array[Sink.Sink]) -> Self
+  fn auditTo(self: &Self, sink: Sink.Sink) -> Self
+  fn enrichWith(self: &Self, enricher: Enricher.Enricher) -> Self
+  fn enrichWithProperty(self: &Self, name: Str, held: Log.Value) -> Self
+  fn filterWith(self: &Self, filter: Filter.Filter) -> Self
+  fn filterExcluding(self: &Self, predicate: fn(&Log.Event) -> Bool) -> Self
+  fn filterIncludingOnly(self: &Self, predicate: fn(&Log.Event) -> Bool) -> Self
+  fn destructureByTransforming(self: &Self, tag: Str, transform: fn(Log.Value) -> Log.Value) -> Self
+  fn destructureAsScalar(self: &Self, tag: Str) -> Self
+  fn destructureWithRule(self: &Self, rule: fn(&Log.Value) -> Option[Log.Value]) -> Self
+  fn destructureByIgnoring(self: &Self, tag: Str, names: Array[Str]) -> Self
+  fn destructureByMasking(self: &Self, tag: Str, names: Array[Str], mask: Str) -> Self
+  fn maximumDepth(self: &Self, depth: Int) -> Self
+  fn maximumStringLength(self: &Self, length: Int) -> Self
+  fn maximumCollectionCount(self: &Self, count: Int) -> Self
+  fn selfLog(self: &Self, log: &SelfLog.SelfLog) -> Self
+  fn clock(self: &Self, clock: Clock.Clock) -> Self
+}
 ```
 
 ### Linkage
@@ -69,4 +119,4 @@ DEPTH 0.7 (DEEP). Tested by `test/PuduLangLog/LoggerTest` and `test/PuduLangLog/
 
 ## Referenced by
 
-(none)
+[[architecture/_MOC]] · [[CHANGELOG]] · [[decisions/ADR-0002-explicit-logger]] · [[src/PuduLangLog/_MOC]] · [[src/PuduLangLog/Clock]] · [[src/PuduLangLog/Domain/Capture]] · [[src/PuduLangLog/Domain/Masking]] · [[src/PuduLangLog/Enricher]] · [[src/PuduLangLog/Filter]] · [[src/PuduLangLog/LevelSwitch]] · [[src/PuduLangLog/Logger]] · [[src/PuduLangLog/Pipeline]] · [[src/PuduLangLog/SelfLog]] · [[src/PuduLangLog/Settings]] · [[src/PuduLangLog/Sink]] · [[subsystems/Configuration]]
