@@ -5,6 +5,12 @@ tags: [changelog]
 
 # Changelog
 
+## 2026-09-29 — Initial release 0.1.0 (#1, #4)
+
+- Released 0.1.0 as tag `v0.1.0` with a GitHub release, and published the API wiki with a checked
+  program per chapter ([[handoffs/2026-09-29-complete-api]]).
+- Domain mutation runs in four parallel shards on pull requests ([[tools/Mutate]]).
+
 ## 2026-09-29 — Complete public API (#1)
 
 - Configuration from settings: [[src/PuduLangLog/Settings]] applies key-value pairs, JSON

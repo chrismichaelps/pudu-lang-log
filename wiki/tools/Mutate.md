@@ -46,4 +46,4 @@ with `PUDU_BIN` naming the compiler (default `pudu`).
 
 ## Referenced by
 
-[[architecture/TESTING]] · [[handoffs/2026-09-29-complete-api]] · [[src/_MOC]]
+[[architecture/TESTING]] · [[CHANGELOG]] · [[handoffs/2026-09-29-complete-api]] · [[src/_MOC]]

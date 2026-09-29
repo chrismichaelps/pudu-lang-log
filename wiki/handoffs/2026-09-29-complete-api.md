@@ -1,8 +1,8 @@
 ---
 type: handoff
-from_role: Implementer
-to_role: Forensic Guardian
-status: active
+from_role: Forensic Guardian
+to_role: Architect
+status: complete
 tags: [handoff, delivery]
 ---
 
@@ -15,6 +15,15 @@ tags: [handoff, delivery]
   correlation identifiers, process name and variable enrichers, and computed properties
   ([[CHANGELOG]]).
 - Every module under `src/` has its mirrored page with a resolved Grill Log ([[src/_MOC]]).
+- Against the published 0.1.2 compiler: `pudu check`, `pudu fmt --check`, and `pudu lint` are clean
+  over `src`, `test`, `tools`, and `examples`; 37 suites pass with 632 assertions; all six
+  examples answer 0; domain mutation kills 456 of 456 mutants ([[tools/Mutate]]).
+- PR #2 into `dev` and PR #3 into `main` passed `checks` and the four `mutation` shards on Linux.
+- Released 0.1.0 as tag `v0.1.0` with a GitHub release; `pudu search` lists
+  `@chrismichaelps/pudu-lang-log`, and a clean project installs it and runs every program of the
+  API wiki at https://github.com/chrismichaelps/pudu-lang-log/wiki.
+- Compiler defects met on the way are reported upstream as pudu-lang#376, #377, and #378
+  ([[grammar/pudu]]).
 
 ## Decided (do not re-litigate)
 
@@ -25,11 +34,11 @@ tags: [handoff, delivery]
 
 ## Open / Remaining
 
-- Domain mutation at a threshold of 100, the pull request into `dev`, and the release.
+- None for the initial package.
 
 ## Exact next action
 
-Run `pudu run tools/Mutate.pudu --domain --threshold 100` on the committed tree.
+None; the initial package is released.
 
 ## Links
 
@@ -37,4 +46,4 @@ Run `pudu run tools/Mutate.pudu --domain --threshold 100` on the committed tree.
 
 ## Referenced by
 
-[[handoffs/_MOC]]
+[[CHANGELOG]] · [[handoffs/_MOC]]
