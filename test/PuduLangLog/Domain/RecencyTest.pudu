@@ -1,0 +1,27 @@
+/** @Test.Domain.Recency.Suite — least recently used ordering of keys */
+module PuduLangLog.Domain.RecencyTest
+
+import Std.Io as Io
+import Std.Test as Test
+import PuduLangLog.Domain.Recency as Recency
+
+/// Runs the suite.
+fn main() -> Int {
+  let none: Array[Str] = []
+  let checks = Test.suite("Domain.Recency", &[
+      Test.equals("a new key goes last", &Recency.touch(&["a", "b"], "c"), &["a", "b", "c"]),
+      Test.equals("a used key moves last", &Recency.touch(&["a", "b", "c"], "a"), &["b", "c", "a"]),
+      Test.equals("the last key stays last", &Recency.touch(&["a", "b"], "b"), &["a", "b"]),
+      Test.equals("touching an empty order", &Recency.touch(&none, "a"), &["a"]),
+      Test.equals("nothing overflows within the limit", &Recency.overflow(&["a", "b"], 2), &none),
+      Test.equals("nothing overflows below the limit", &Recency.overflow(&["a"], 3), &none),
+      Test.equals("the least recent overflow first", &Recency.overflow(&["a", "b", "c", "d"], 2), &["a", "b"]),
+      Test.equals("a limit of zero retires every key", &Recency.overflow(&["a", "b"], 0), &["a", "b"]),
+      Test.equals("a negative limit counts as zero", &Recency.overflow(&["a", "b"], -1), &["a", "b"])
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}

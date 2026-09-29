@@ -1,0 +1,93 @@
+/** @Test.Sinks.Map.Suite — routing events to one sink per key */
+module PuduLangLog.Sinks.MapTest
+
+import Std.Io as Io
+import Std.List as List
+import Std.Sync as Sync
+import Std.Test as Test
+import PuduLangLog.Configuration as Configuration
+import PuduLangLog as Log
+import PuduLangLog.Logger as Logger
+import PuduLangLog.Sink as Sink
+import PuduLangLog.Sinks.Map as Map
+import PuduLangLog.Value as Value
+
+/// A sink recording `key:message`, `key:flush`, and `key:close` into a shared journal.
+fn journaled(journal: &Sync.Cell[Array[Str]], key: Str) -> Sink.Sink {
+  let shared = *journal
+  Sink.Sink {
+    emit: fn(event: &Log.Event) -> Result[(), Str] {
+      note(&shared, key + ":" + event.template.text)
+      if key == "broken" { Err("refused") } else { Ok(()) }
+    },
+    flush: fn() -> () { note(&shared, key + ":flush") },
+    close: fn() -> () { note(&shared, key + ":close") },
+    attach: fn(_listener: Sink.Listener) -> () { note(&shared, key + ":attach") }
+  }
+}
+
+/// Appends a line to the journal.
+fn note(journal: &Sync.Cell[Array[Str]], line: Str) -> () {
+  let current = match Sync.get(journal) {
+    case Ok(lines) => lines
+    case Err(_) => []
+  }
+  let _stored = Sync.set(journal, current.push(line))
+}
+
+/// The journal's lines.
+fn linesOf(journal: &Sync.Cell[Array[Str]]) -> Array[Str] {
+  match Sync.get(journal) {
+    case Ok(lines) => lines
+    case Err(_) => []
+  }
+}
+
+/// Runs the suite.
+fn main() -> Int {
+  let none: Array[Str] = []
+  let journal = Sync.cell(none)
+  let routed = Map.sink(Map.defaults(Map.byProperty("Tenant", "shared"), fn(key: Str) -> Sink.Sink { journaled(&journal, key) }))
+  let logger = Configuration.create().writeTo(routed).createLogger()
+  logger.information("\{Tenant\} a", [Value.text("north")])
+  logger.information("\{Tenant\} b", [Value.text("south")])
+  logger.information("\{Tenant\} c", [Value.text("north")])
+  logger.information("no tenant", [])
+  logger.information("\{Tenant\} d", [Value.int(7)])
+  let routedLines = linesOf(&journal)
+  Logger.close(&logger)
+  let closedLines = linesOf(&journal)
+  let limited = Sync.cell(none)
+  let bounded = Map.sink(Map.Options{..Map.defaults(Map.byProperty("Tenant", "shared"), fn(key: Str) -> Sink.Sink { journaled(&limited, key) }), limit: Some(2)})
+  let boundedLogger = Configuration.create().writeTo(bounded).createLogger()
+  for tenant in ["a", "b", "a", "c", "b"] { boundedLogger.information("\{Tenant\}", [Value.text(tenant)]) }
+  let eager = Sync.cell(none)
+  let single = Map.sink(Map.Options{..Map.defaults(Map.byProperty("Tenant", "shared"), fn(key: Str) -> Sink.Sink { journaled(&eager, key) }), limit: Some(0)})
+  let _one = (single.emit)(&Log.Event{..sampleEvent(), properties: [Value.property("Tenant", Value.text("x"))]})
+  let failing = Map.sink(Map.defaults(fn(_event: &Log.Event) -> Str { "broken" }, fn(key: Str) -> Sink.Sink { journaled(&journal, key) }))
+  let refused = (failing.emit)(&sampleEvent())
+  let after = Sync.cell(none)
+  let closing = Map.sink(Map.defaults(fn(_event: &Log.Event) -> Str { "k" }, fn(key: Str) -> Sink.Sink { journaled(&after, key) }))
+  (closing.attach)(fn(_report: &Sink.Report) -> () {})
+  let _first = (closing.emit)(&sampleEvent())
+  (closing.close)()
+  let _late = (closing.emit)(&sampleEvent())
+  let checks = Test.suite("Sinks.Map", &[
+      Test.equals("events reach their key's sink, opened once", &routedLines, &["north:\{Tenant\} a", "south:\{Tenant\} b", "north:\{Tenant\} c", "shared:no tenant", "7:\{Tenant\} d"]),
+      Test.equals("closing flushes, then closes every open sink, least recent first", &List.drop(&closedLines, routedLines.length()), &["south:flush", "north:flush", "shared:flush", "7:flush", "south:flush", "south:close", "north:flush", "north:close", "shared:flush", "shared:close", "7:flush", "7:close"]),
+      Test.equals("the least recently used sink closes beyond the limit", &linesOf(&limited), &["a:\{Tenant\}", "b:\{Tenant\}", "a:\{Tenant\}", "c:\{Tenant\}", "b:flush", "b:close", "b:\{Tenant\}", "a:flush", "a:close"]),
+      Test.equals("a limit of zero closes each sink after its event", &linesOf(&eager), &["x:msg", "x:flush", "x:close"]),
+      Test.equals("a failing sink's error reaches the caller", &refused, &Err("refused")),
+      Test.equals("listeners reach sinks opened later, and a closed map drops events", &linesOf(&after), &["k:attach", "k:msg", "k:flush", "k:close"])
+    ])
+  let ran = Test.run(&checks)
+  for failure in Test.failuresOf(&ran) {
+    let _reported = Io.writeErrorLine(failure)
+  }
+  Test.report(&ran)
+}
+
+/// An event with no properties.
+fn sampleEvent() -> Log.Event {
+  Log.Event{timestamp: Log.Timestamp{millis: 0, offset: 0}, level: Log.Information, template: Log.Template{text: "msg", tokens: [Log.Literal("msg")], holes: [], binding: Log.Unbound}, properties: [], failure: None, traceId: None, spanId: None}
+}

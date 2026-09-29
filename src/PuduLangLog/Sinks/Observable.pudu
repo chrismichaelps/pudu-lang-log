@@ -1,0 +1,93 @@
+/** @Log.Sinks.Observable.Subject — hands events to subscribed observers */
+module PuduLangLog.Sinks.Observable
+
+import Std.Sync as Sync
+import PuduLangLog as Log
+import PuduLangLog.Sink as Sink
+
+/** @Log.Sinks.Observable.Observer — receives events and the end of the stream */
+export type Observer = { next: fn(&Log.Event) -> (), completed: fn() -> () }
+
+/** @Log.Sinks.Observable.Subscription — the ticket that ends one subscription */
+export type Subscription = { id: Int }
+
+/** @Log.Sinks.Observable.Subject — the observers and whether the stream ended */
+export type Observable = { observers: Sync.Cell[Array[(Int, Observer)]], issued: Sync.Counter, ended: Sync.Cell[Bool], lock: Sync.Mutex }
+
+/// A subject with no observers.
+export fn create() -> Observable {
+  let none: Array[(Int, Observer)] = []
+  Observable{observers: Sync.cell(none), issued: Sync.counter(0), ended: Sync.cell(false), lock: Sync.mutex()}
+}
+
+/// An observer calling `next` for each event and ignoring the end of the stream.
+export fn observer(next: fn(&Log.Event) -> ()) -> Observer { Observer{next: next, completed: fn() -> () {}} }
+
+/// Adds an observer and answers the subscription that removes it. An observer added after the sink
+/// closed is told at once that the stream ended.
+export fn subscribe(subject: &Observable, watcher: Observer) -> Subscription {
+  let id = match Sync.increment(&subject.issued, 1) {
+    case Ok(next) => next
+    case Err(_) => 0
+  }
+  let late = Sync.withLock(&subject.lock, fn() -> Bool {
+      if ended(subject) { return true }
+      let _stored = Sync.set(&subject.observers, observersOf(subject).push((id, watcher)))
+      false
+    })
+  if late != Ok(false) { (watcher.completed)() }
+  Subscription{id: id}
+}
+
+/// Removes the observer of a subscription; removing it twice does nothing.
+export fn unsubscribe(subject: &Observable, subscription: Subscription) -> () {
+  let _removed = Sync.withLock(&subject.lock, fn() -> () {
+      let _stored = Sync.set(&subject.observers, observersOf(subject).filter(|entry: (Int, Observer)| entry[0] != subscription.id))
+    })
+}
+
+/// How many observers are subscribed.
+export fn count(subject: &Observable) -> Int { observersOf(subject).length() }
+
+/// The sink handing each event to every observer, in subscription order. Closing it ends the
+/// stream: each observer's `completed` runs once and the observers are removed.
+export fn sink(subject: &Observable) -> Sink.Sink {
+  let shared = *subject
+  Sink.Sink {
+    emit: fn(event: &Log.Event) -> Result[(), Str] {
+      for entry in observersOf(&shared) { (entry[1].next)(event) }
+      Ok(())
+    },
+    flush: fn() -> () {},
+    close: fn() -> () {
+      let finished = match Sync.withLock(&shared.lock, fn() -> Array[(Int, Observer)] {
+          let current = observersOf(&shared)
+          let none: Array[(Int, Observer)] = []
+          let _stored = Sync.set(&shared.observers, none)
+          let _ended = Sync.set(&shared.ended, true)
+          current
+        }) {
+        case Ok(current) => current
+        case Err(_) => []
+      }
+      for entry in finished { (entry[1].completed)() }
+    },
+    attach: fn(_listener: Sink.Listener) -> () {}
+  }
+}
+
+/// The observers subscribed, oldest first.
+fn observersOf(subject: &Observable) -> Array[(Int, Observer)] {
+  match Sync.get(&subject.observers) {
+    case Ok(current) => current
+    case Err(_) => []
+  }
+}
+
+/// Whether the sink has closed.
+fn ended(subject: &Observable) -> Bool {
+  match Sync.get(&subject.ended) {
+    case Ok(flag) => flag
+    case Err(_) => true
+  }
+}
