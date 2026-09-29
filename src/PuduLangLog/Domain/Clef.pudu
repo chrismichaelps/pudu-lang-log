@@ -1,0 +1,146 @@
+/** @Log.Domain.Clef.Module — compact JSON lines read back into events */
+module PuduLangLog.Domain.Clef
+
+import Std.Decimal as Decimal
+import Std.Json as Json
+import Std.List as List
+import Std.Option as Option
+import Std.Time.Format as Format
+import PuduLangLog.Domain.Display as Display
+import PuduLangLog.Domain.Levels as Levels
+import PuduLangLog.Domain.Parser as Parser
+import PuduLangLog as Log
+
+/// Members the format reserves; they never become properties.
+const RESERVED: Array[Str] = ["@t", "@mt", "@m", "@l", "@x", "@i", "@r", "@tr", "@sp"]
+
+/// The prefix of a trace line in failure text.
+const TRACE_PREFIX: Str = "   at "
+
+/// The prefix of a cause line in failure text.
+const CAUSE_PREFIX: Str = " ---> "
+
+/// The event one line of compact JSON describes, or why it cannot be read.
+export fn line(text: Str) -> Result[Log.Event, Str] {
+  match Json.decode(text) {
+    case Ok(document) => event(&document)
+    case Err(problem) => Err("The line is not JSON: " + Json.explain(&problem))
+  }
+}
+
+/// The event a compact JSON object describes. `@t` is required; without `@mt` the message `@m`
+/// becomes a template with its braces escaped; the level defaults to `Information`; members named
+/// with a doubled `@@` are properties named with one `@`.
+export fn event(document: &Json.Json) -> Result[Log.Event, Str] {
+  let members = match Json.asObject(document) {
+    case Some(found) => found
+    case None => { return Err("The event is not a JSON object") }
+  }
+  let stamp = textMember(&members, "@t") ?
+  let timestamp = match stamp {
+    case Some(written) => moment(written) ?
+    case None => { return Err("The event has no `@t` timestamp") }
+  }
+  let level = match textMember(&members, "@l") ? {
+    case Some(name) => Option.okOr(Levels.parse(name), "Unknown level `" + name + "`") ?
+    case None => Log.Information
+  }
+  let rendered = Option.unwrapOr(textMember(&members, "@m") ?, "")
+  let template = match textMember(&members, "@mt") ? {
+    case Some(written) => written
+    case None => rendered.replace("\{", "\{\{").replace("\}", "\}\}")
+  }
+  let failure = Option.map(textMember(&members, "@x") ?, |written: Str| failureOf(written))
+  var properties: Array[Log.Property] = []
+  for (name, held) in members {
+    if name.startsWith("@@") {
+      properties = properties.push(Log.Property{name: name.drop(1), value: valueOf(&held)})
+    } else if !RESERVED.contains(name) {
+      properties = properties.push(Log.Property{name: name, value: valueOf(&held)})
+    }
+  }
+  Ok(Log.Event {
+      timestamp: timestamp,
+      level: level,
+      template: Parser.parse(template),
+      properties: properties,
+      failure: failure,
+      traceId: textMember(&members, "@tr") ?,
+      spanId: textMember(&members, "@sp") ?
+    })
+}
+
+/// A reserved member's text, none when absent, or an error when it is not text.
+fn textMember(members: &Array[(Str, Json.Json)], name: Str) -> Result[Option[Str], Str] {
+  match List.find(members, |member: (Str, Json.Json)| member[0] == name) {
+    case Some(found) => match Json.asText(&found[1]) {
+      case Some(text) => Ok(Some(text))
+      case None => Err("The `" + name + "` member is not text")
+    }
+    case None => Ok(None)
+  }
+}
+
+/// The moment an RFC 3339 timestamp names, keeping its offset in minutes.
+fn moment(written: Str) -> Result[Log.Timestamp, Str] {
+  let millis = match Format.fromRfc3339(written) {
+    case Ok(found) => found
+    case Err(_) => { return Err("The timestamp `" + written + "` is not RFC 3339") }
+  }
+  Ok(Log.Timestamp{millis: millis, offset: offsetOf(written)})
+}
+
+/// The offset in minutes of a timestamp ending in `Z` or `±hh:mm`.
+fn offsetOf(written: Str) -> Int {
+  let tail = written.drop(written.length() - 6)
+  let hours = Option.unwrapOr(tail.slice(1, 3).toInt(), 0)
+  let minutes = Option.unwrapOr(tail.slice(4, 6).toInt(), 0)
+  if tail.startsWith("+") { hours * 60 + minutes } else if tail.startsWith("-") { 0 - hours * 60 - minutes } else { 0 }
+}
+
+/// A captured value from JSON: whole numbers as integers, fractions as exact numbers, and objects
+/// as structures tagged by their `$type` member.
+fn valueOf(held: &Json.Json) -> Log.Value {
+  match held {
+    case Json.Null => Log.Scalar(Log.Null)
+    case Json.Boolean(flag) => Log.Scalar(Log.Boolean(flag))
+    case Json.Number(number) => Log.Scalar(Log.Integer(number))
+    case Json.Fractional(digits) => match Decimal.parse(digits) {
+      case Some(exact) => Log.Scalar(Log.Exact(exact))
+      case None => Log.Scalar(Log.Text(digits))
+    }
+    case Json.Text(text) => Log.Scalar(Log.Text(text))
+    case Json.List(items) => Log.Sequence(items.map(|item: Json.Json| valueOf(&item)))
+    case Json.Object(members) => {
+      let tag = match List.find(&members, |member: (Str, Json.Json)| member[0] == Display.TYPE_TAG) {
+        case Some(found) => Json.asText(&found[1])
+        case None => None
+      }
+      let kept = members.filter(|member: (Str, Json.Json)| member[0] != Display.TYPE_TAG)
+      Log.Structure(Log.Structure{tag: tag, properties: kept.map(|member: (Str, Json.Json)| Log.Property{name: member[0], value: valueOf(&member[1])})})
+    }
+  }
+}
+
+/// A failure read from its text: `Kind: message` on the first line, message lines until the first
+/// trace line, trace lines, and each cause line opening the cause of the one before.
+fn failureOf(written: Str) -> Log.Failure {
+  let lines = written.split("\n")
+  let causeAt = match List.findIndex(&List.drop(&lines, 1), |text: Str| text.startsWith(CAUSE_PREFIX)) {
+    case Some(found) => found + 1
+    case None => lines.length()
+  }
+  let own = List.take(&lines, causeAt)
+  let traceAt = Option.unwrapOr(List.findIndex(&own, |text: Str| text.startsWith(TRACE_PREFIX)), own.length())
+  let heading = List.take(&own, traceAt).join("\n")
+  let (kind, message) = match heading.indexOf(": ") {
+    case -1 => (heading, "")
+    case at => (heading.take(at), heading.drop(at + 2))
+  }
+  let trace = List.drop(&own, traceAt).map(|text: Str| text.drop(TRACE_PREFIX.length()))
+  let causes = if causeAt == lines.length() { [] } else {
+    let rest = List.drop(&lines, causeAt)
+    [failureOf(rest.join("\n").drop(CAUSE_PREFIX.length()))]
+  }
+  Log.Failure{kind: kind, message: message, trace: trace, causes: causes}
+}
