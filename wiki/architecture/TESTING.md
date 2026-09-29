@@ -23,8 +23,8 @@ and each suite names its failed checks on stderr.
 | Examples | `examples/*.pudu`, run by CI | the documented programs compile and answer 0 |
 | Mutation | [[tools/Mutate]] | the suites notice single-point changes to the pure layer |
 
-The mutation gate runs on pull requests over `Domain/` with a threshold of 100: every valid mutant
-is killed. A mutant that cannot change behaviour is removed by simplifying the code rather than
+The mutation gate runs on pull requests over `Domain/`, in four parallel shards, with a threshold
+of 100: every valid mutant is killed. A mutant that cannot change behaviour is removed by simplifying the code rather than
 excused.
 
 ## Referenced by

@@ -15,7 +15,7 @@ suites, and report survivors.
 
 ## Interface
 
-`pudu run tools/Mutate.pudu [--file <path> | --domain] [--every <n>] [--threshold <percent>] [--dry-run]`,
+`pudu run tools/Mutate.pudu [--file <path> | --domain] [--every <n> [--offset <k>]] [--threshold <percent>] [--dry-run]`,
 with `PUDU_BIN` naming the compiler (default `pudu`).
 
 ## Algorithm
@@ -23,8 +23,9 @@ with `PUDU_BIN` naming the compiler (default `pudu`).
 1. Mutants are operator swaps at code positions outside strings, comments, and imports;
    comparisons must be spaced so type brackets are not mutated.
 2. A mutant that fails `pudu check` is invalid; one whose suites still pass survived.
-3. `--domain` limits the run to the pure layer; `--every n` samples; `--threshold` fails the run
-   below a score.
+3. `--domain` limits the run to the pure layer; `--every n` keeps every n-th mutant starting at
+   `--offset k`, so n runs with offsets 0 to n-1 cover every mutant once; `--threshold` fails the
+   run below a score.
 
 ## Negative Logic (Prohibited Paths)
 
@@ -35,6 +36,10 @@ with `PUDU_BIN` naming the compiler (default `pudu`).
 
 ## Grill Log
 
+- **Q:** Why shard by offset rather than by file?
+  **A:** Mutants of one file cost very different amounts, and interleaving spreads the slow ones
+  across shards; continuous integration runs four shards in parallel. _Rejected:_ one job over
+  every mutant, which approaches the job time limit as the domain grows.
 - **Q:** Why mutate only the domain in pull requests?
   **A:** It holds the parsing, capture, and formatting rules where a single-point change is most
   likely to go unnoticed. _Rejected:_ the full tree on every pull request.

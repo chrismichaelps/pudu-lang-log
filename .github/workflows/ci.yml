@@ -51,6 +51,10 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
       - name: Install Pudu from its published archive
@@ -64,5 +68,5 @@ jobs:
           sha256sum -c "$archive.sha256"
           tar -xzf "$archive"
           echo "$RUNNER_TEMP/pudu-${PUDU_VERSION}-linux-amd64/bin" >> "$GITHUB_PATH"
-      - name: Mutation testing on the pure domain
-        run: pudu run tools/Mutate.pudu --domain --threshold 100
+      - name: Mutation testing on the pure domain, one shard of four
+        run: pudu run tools/Mutate.pudu --domain --every 4 --offset ${{ matrix.shard }} --threshold 100

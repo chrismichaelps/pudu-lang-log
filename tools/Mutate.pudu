@@ -5,6 +5,7 @@ import Std.Char as Char
 import Std.Env as Env
 import Std.Io as Io
 import Std.List as List
+import Std.Math as Math
 import Std.Option as Option
 import Std.Process as Process
 import Std.Result as Result
@@ -31,6 +32,7 @@ const DOMAIN: Str = "src/PuduLangLog/Domain"
 /// Runs the harness and answers 0, or 1 when the score is below the threshold.
 fn main() -> Int {
   let every = Option.unwrapOr(Option.andThen(Env.option("--every"), |given: Str| Text.countOf(given)), 1)
+  let offset = Option.unwrapOr(Option.andThen(Env.option("--offset"), |given: Str| Text.countOf(given)), 0)
   let threshold = Option.unwrapOr(Option.andThen(Env.option("--threshold"), |given: Str| Text.countOf(given)), 0)
   let files = match Env.option("--file") {
     case Some(one) => [one]
@@ -43,7 +45,8 @@ fn main() -> Int {
   var chosen: Array[Mutant] = []
   var index = 0
   for mutant in all {
-    if index % (if every > 0 { every } else { 1 }) == 0 { chosen = chosen.push(mutant) }
+    let step = Math.max(1, every)
+    if index % step == offset % step { chosen = chosen.push(mutant) }
     index = index + 1
   }
   if Env.hasFlag("--dry-run") {
